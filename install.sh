@@ -2,7 +2,7 @@
 # ┌─────────────────────────────────────────────────────────────────┐
 # │  Run — macOS (Apple Silicon) 智能安装脚本                        │
 # │  先安装 Run，再检查并安装 Git / Node.js                          │
-# │  用法: curl -fsSL https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash │
+# │  用法: curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash │
 # └─────────────────────────────────────────────────────────────────┘
 set -euo pipefail
 
@@ -17,11 +17,10 @@ MAC_FALLBACK_URL="https://ug.link/piercehome/filemgr/share-download/?id=3ad35dc8
 # GitHub 代理前缀（无代理用户回退用）。GitHub 直连不通时，按顺序探测，
 # 取第一个可用的，之后所有 github.com 下载都套上该前缀。
 # 这些是第三方公共代理，仅作兜底，可能不定期失效，失效时更新此列表即可。
+# 顺序：ghproxy.net 首选（实测最快且直接回内容），gh-proxy.com 兜底。
 GH_PROXIES=(
-  "https://ghproxy.com"
-  "https://ghfast.top"
+  "https://ghproxy.net"
   "https://gh-proxy.com"
-  "https://gh.ddlc.top"
 )
 # 运行时确定：空=直连 GitHub；非空=代理前缀（形如 https://ghfast.top）
 GH_PROXY=""

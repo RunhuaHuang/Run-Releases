@@ -1,4 +1,4 @@
-# 用法: irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+# 用法: irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 # 稳定安装入口配置（仅安装协议变化时才需要更新）
 $ErrorActionPreference = 'Stop'
 
@@ -18,11 +18,10 @@ $AppName = 'Run'
 # GitHub 代理前缀（无代理用户回退用）。GitHub 直连不通时，按顺序探测，
 # 取第一个可用的，之后所有 github.com 下载都套上该前缀。
 # 第三方公共代理，仅作兜底，失效时更新此列表即可。
+# 顺序：ghproxy.net 首选（实测最快且直接回内容），gh-proxy.com 兜底。
 $GhProxies = @(
-  'https://ghproxy.com',
-  'https://ghfast.top',
-  'https://gh-proxy.com',
-  'https://gh.ddlc.top'
+  'https://ghproxy.net',
+  'https://gh-proxy.com'
 )
 # 运行时确定：空=直连；非空=代理前缀（形如 https://ghfast.top）
 $script:GhProxy = ''
