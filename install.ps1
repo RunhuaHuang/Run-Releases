@@ -20,6 +20,7 @@ $script:Total = 6
 $script:RunAlreadyRunning = $false
 $script:InstalledGitThisRun = $false
 $script:InstalledNodeThisRun = $false
+$script:RestartedRunThisRun = $false
 
 function Write-Banner {
   Write-Host ''
@@ -345,6 +346,7 @@ function Restart-RunIfNeeded($RunExe) {
   }
 
   Start-Process -FilePath $RunExe | Out-Null
+  $script:RestartedRunThisRun = $true
   Write-Ok '已重启 Run'
   return $true
 }
@@ -496,7 +498,13 @@ try {
   }
 
   Write-Host ''
-  Write-Host '  ✓  Git 和 Node.js 已就绪，现在可以正常使用 Run。' -ForegroundColor Green
+  if ($script:RestartedRunThisRun) {
+    Write-Host '  ✓  本轮已补装依赖，Run 已自动重启，现在可以正常使用。' -ForegroundColor Green
+  } elseif ($script:InstalledGitThisRun -or $script:InstalledNodeThisRun) {
+    Write-Host '  ✓  依赖已补齐，Run 现在可以正常使用。' -ForegroundColor Green
+  } else {
+    Write-Host '  ✓  依赖已齐全，无需重启 Run，现在可以正常使用。' -ForegroundColor Green
+  }
   Write-Host ''
 } catch {
   Write-Host ''
