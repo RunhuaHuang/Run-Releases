@@ -15,21 +15,51 @@ $NodeInstallerUrl = "$ReleasesBase/download/$BootstrapTag/$NodeInstallerName"
 $NodeInstallerSha256 = 'feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806'
 $AppName = 'Run'
 
-function Write-Step($Message) {
+$script:Step = 0
+$script:Total = 6
+
+function Write-Banner {
   Write-Host ''
-  Write-Host "[$script:Step/$script:Total] $Message" -ForegroundColor Cyan
+  Write-Host '    ██████╗ ██╗   ██╗███╗   ██╗' -ForegroundColor Cyan
+  Write-Host '    ██╔══██╗██║   ██║████╗  ██║' -ForegroundColor Cyan
+  Write-Host '    ██████╔╝██║   ██║██╔██╗ ██║' -ForegroundColor Cyan
+  Write-Host '    ██╔══██╗██║   ██║██║╚██╗██║' -ForegroundColor Cyan
+  Write-Host '    ██║  ██║╚██████╔╝██║ ╚████║' -ForegroundColor Cyan
+  Write-Host '    ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝' -ForegroundColor Cyan
+  Write-Host '    智能 AI 桌面助理  ·  Windows 安装向导' -ForegroundColor DarkGray
+  Write-Host '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor DarkGray
+}
+
+function Write-Step($Message) {
+  $script:Step++
+  Write-Host ''
+  Write-Host ("  [{0}/{1}] {2}" -f $script:Step, $script:Total, $Message) -ForegroundColor Cyan
 }
 
 function Write-Ok($Message) {
-  Write-Host "  [OK] $Message" -ForegroundColor Green
+  Write-Host ("    ✓  {0}" -f $Message) -ForegroundColor Green
 }
 
 function Write-Info($Message) {
-  Write-Host "  [..] $Message" -ForegroundColor DarkCyan
+  Write-Host ("    →  {0}" -f $Message) -ForegroundColor Blue
 }
 
 function Write-Warn($Message) {
-  Write-Host "  [!!] $Message" -ForegroundColor Yellow
+  Write-Host ("    ⚠  {0}" -f $Message) -ForegroundColor Yellow
+}
+
+function Write-Dim($Message) {
+  Write-Host $Message -ForegroundColor DarkGray
+}
+
+function Pause-IfInteractive($Prompt = '按 Enter 结束...') {
+  try {
+    if ($Host.Name -match 'ConsoleHost|Visual Studio Code Host|Windows PowerShell ISE Host') {
+      Read-Host $Prompt | Out-Null
+    }
+  } catch {
+    # ignore pause failures in non-interactive hosts
+  }
 }
 
 function Format-Bytes([long]$Bytes) {
@@ -39,12 +69,26 @@ function Format-Bytes([long]$Bytes) {
   return ('{0:N2} GB' -f ($Bytes / 1GB))
 }
 
-function Ensure-Admin {
+function Test-Admin {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw '请使用“以管理员身份运行”的 PowerShell 执行此安装脚本。'
-  }
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Show-AdminGuidance {
+  Write-Host ''
+  Write-Host '  ✗  当前 PowerShell 不是以管理员身份运行。' -ForegroundColor Red
+  Write-Host ''
+  Write-Host '  请按下面步骤重新运行：' -ForegroundColor Yellow
+  Write-Dim  '    1. 关闭当前窗口'
+  Write-Dim  '    2. 在开始菜单搜索 PowerShell'
+  Write-Dim  '    3. 右键 PowerShell，选择“以管理员身份运行”'
+  Write-Dim  '    4. 重新执行以下命令：'
+  Write-Host ''
+  Write-Host '       irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex' -ForegroundColor Gray
+  Write-Host ''
+  Pause-IfInteractive '请在记下命令后按 Enter 退出...'
+  exit 1
 }
 
 function Get-CommandVersion($Command, $VersionArgs = '--version') {
@@ -94,7 +138,7 @@ function Download-File($Url, $Destination, $Label) {
     }
 
     Write-Progress -Activity $Label -Completed
-    Write-Ok ("下载完成：{0}" -f (Format-Bytes $totalRead))
+    Write-Ok ("下载完成（{0}）" -f (Format-Bytes $totalRead))
   } finally {
     if ($fileStream) { $fileStream.Dispose() }
     if ($stream) { $stream.Dispose() }
@@ -113,13 +157,15 @@ function Test-GitHubAccess {
 
 function Show-GitHubFallback {
   Write-Host ''
-  Write-Host '无法连接 GitHub。请先尝试开启代理/VPN 后重新运行此脚本。' -ForegroundColor Yellow
+  Write-Host '  ✗  无法连接 GitHub。' -ForegroundColor Red
+  Write-Host '  请先尝试开启代理/VPN 后重新运行此脚本。' -ForegroundColor Yellow
   Write-Host ''
-  Write-Host '如果没有代理，请改用备用手动安装方式：' -ForegroundColor DarkYellow
-  Write-Host "  1. 打开：$WindowsFallbackUrl" -ForegroundColor Gray
-  Write-Host '  2. 下载其中三个安装包：Run、Git、Node.js' -ForegroundColor Gray
-  Write-Host '  3. 全部安装到默认路径，不要修改安装路径，否则不可用' -ForegroundColor Gray
+  Write-Dim '  如果当前网络无法访问 GitHub，请改用备用手动安装方式：'
+  Write-Dim "    1. 打开：$WindowsFallbackUrl"
+  Write-Dim '    2. 下载其中三个安装包：Run、Git、Node.js'
+  Write-Dim '    3. 全部安装到默认路径，不要修改安装路径，否则可能无法正常使用'
   Write-Host ''
+  Pause-IfInteractive '请在记下地址后按 Enter 退出...'
   exit 1
 }
 
@@ -130,6 +176,10 @@ function Assert-Sha256($Path, $Expected) {
   }
 }
 
+function Refresh-Path {
+  $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
 function Install-GitIfNeeded($TempDir) {
   $gitVersion = Get-CommandVersion 'git'
   if ($gitVersion) {
@@ -138,7 +188,7 @@ function Install-GitIfNeeded($TempDir) {
   }
 
   $installer = Join-Path $TempDir $GitInstallerName
-  Download-File $GitInstallerUrl $installer "正在下载 Git 安装包..."
+  Download-File $GitInstallerUrl $installer '正在下载 Git 安装包...'
   Assert-Sha256 $installer $GitInstallerSha256
   Write-Ok 'Git 安装包校验通过'
 
@@ -148,7 +198,7 @@ function Install-GitIfNeeded($TempDir) {
     throw "Git 安装失败，退出码：$($process.ExitCode)"
   }
 
-  $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+  Refresh-Path
   $gitVersion = Get-CommandVersion 'git'
   if (-not $gitVersion) {
     throw 'Git 安装完成，但当前会话仍未检测到 git。'
@@ -164,7 +214,7 @@ function Install-NodeIfNeeded($TempDir) {
   }
 
   $installer = Join-Path $TempDir $NodeInstallerName
-  Download-File $NodeInstallerUrl $installer "正在下载 Node.js 安装包..."
+  Download-File $NodeInstallerUrl $installer '正在下载 Node.js 安装包...'
   Assert-Sha256 $installer $NodeInstallerSha256
   Write-Ok 'Node.js 安装包校验通过'
 
@@ -174,7 +224,7 @@ function Install-NodeIfNeeded($TempDir) {
     throw "Node.js 安装失败，退出码：$($process.ExitCode)"
   }
 
-  $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+  Refresh-Path
   $nodeVersion = Get-CommandVersion 'node'
   if (-not $nodeVersion) {
     throw 'Node.js 安装完成，但当前会话仍未检测到 node。'
@@ -211,44 +261,12 @@ function Get-LatestWindowsAsset {
   throw '未找到 Windows x64 安装包。'
 }
 
-function Install-Run($TempDir) {
-  $latest = Get-LatestWindowsAsset
-  Write-Ok "最新版本：$($latest.Version)"
-  Write-Ok "安装包：$($latest.Name)"
-
-  $installerPath = Join-Path $TempDir $latest.Name
-  Download-File $latest.Url $installerPath "正在下载 Run Windows 安装包..."
-
-  Write-Info '准备启动 Run 安装程序...'
-  switch -Regex ($latest.Name) {
-    '\.msi$' {
-      Write-Warn '即将打开 Windows Installer 安装界面，请在弹出的向导中完成安装。'
-      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/passive', '/norestart' -Wait -PassThru
-    }
-    default {
-      Write-Warn '即将打开 Run 安装向导，请不要关闭安装窗口，按向导完成安装。'
-      $process = Start-Process -FilePath $installerPath -Wait -PassThru
-    }
-  }
-
-  if ($process.ExitCode -ne 0) {
-    throw "Run 安装失败，退出码：$($process.ExitCode)"
-  }
-
-  $runExe = Find-RunExecutable
-  if (-not $runExe) {
-    throw '安装程序已退出，但未检测到 Run.exe。请确认是否在安装向导中取消了安装，或安装到了非默认路径。'
-  }
-
-  Write-Ok 'Run 安装完成'
-  Write-Ok "安装位置：$runExe"
-}
-
 function Find-RunExecutable {
+  $programFilesX86 = [System.Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
   $candidates = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Run\Run.exe'),
     (Join-Path $env:ProgramFiles 'Run\Run.exe'),
-    (Join-Path ${env:ProgramFiles(x86)} 'Run\Run.exe')
+    $(if ($programFilesX86) { Join-Path $programFilesX86 'Run\Run.exe' })
   ) | Where-Object { $_ }
 
   foreach ($candidate in $candidates) {
@@ -278,17 +296,47 @@ function Find-RunExecutable {
   return $null
 }
 
-$script:Step = 0
-$script:Total = 6
+function Install-Run($TempDir) {
+  $latest = Get-LatestWindowsAsset
+  Write-Ok "最新版本：$($latest.Version)"
+  Write-Ok "安装包：$($latest.Name)"
+
+  $installerPath = Join-Path $TempDir $latest.Name
+  Download-File $latest.Url $installerPath '正在下载 Run Windows 安装包...'
+
+  Write-Info '准备启动 Run 安装程序...'
+  switch -Regex ($latest.Name) {
+    '\.msi$' {
+      Write-Warn '即将打开 Windows Installer 安装界面，请在弹出的向导中完成安装。'
+      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/passive', '/norestart' -Wait -PassThru
+    }
+    default {
+      Write-Warn '即将打开 Run 安装向导，请不要关闭安装窗口，并按向导完成安装。'
+      $process = Start-Process -FilePath $installerPath -Wait -PassThru
+    }
+  }
+
+  if ($process.ExitCode -ne 0) {
+    throw "Run 安装失败，退出码：$($process.ExitCode)"
+  }
+
+  $runExe = Find-RunExecutable
+  if (-not $runExe) {
+    throw '安装程序已退出，但未检测到 Run.exe。请确认是否在安装向导中取消了安装，或安装到了非默认路径。'
+  }
+
+  Write-Ok 'Run 安装完成'
+  Write-Ok "安装位置：$runExe"
+}
 
 try {
-  Ensure-Admin
+  Write-Banner
 
-  Write-Host ''
-  Write-Host 'Run · Windows x64 安装向导' -ForegroundColor Cyan
+  if (-not (Test-Admin)) {
+    Show-AdminGuidance
+  }
 
-  $script:Step++
-  Write-Step '检查系统环境'
+  Write-Step '检测系统环境'
   if (-not [Environment]::Is64BitOperatingSystem) {
     throw '仅支持 Windows x64。'
   }
@@ -301,22 +349,18 @@ try {
     Show-GitHubFallback
   }
 
-  $tempDir = Join-Path ([IO.Path]::GetTempPath()) ("run-bootstrap-" + [Guid]::NewGuid().ToString('N'))
+  $tempDir = Join-Path ([IO.Path]::GetTempPath()) ('run-bootstrap-' + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $tempDir | Out-Null
 
-  $script:Step++
-  Write-Step '安装 Run'
+  Write-Step '下载并安装 Run'
   Install-Run $tempDir
 
-  $script:Step++
   Write-Step '检查 Git'
   Install-GitIfNeeded $tempDir
 
-  $script:Step++
   Write-Step '检查 Node.js'
   Install-NodeIfNeeded $tempDir
 
-  $script:Step++
   Write-Step '完成'
   if (-not (Get-CommandVersion 'git')) {
     throw 'Git 尚未就绪，Run 还不能正常使用。'
@@ -324,20 +368,26 @@ try {
   if (-not (Get-CommandVersion 'node')) {
     throw 'Node.js 尚未就绪，Run 还不能正常使用。'
   }
+
   Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
   Write-Ok '临时文件已清理'
+
   $runExe = Find-RunExecutable
   if ($runExe) {
     Write-Info '正在启动 Run...'
     Start-Process -FilePath $runExe | Out-Null
     Write-Ok "已启动 $runExe"
   } else {
-    Write-Info '未定位到 Run.exe，请从开始菜单手动启动 Run。'
+    Write-Warn '未定位到 Run.exe，请从开始菜单手动启动 Run。'
   }
+
   Write-Host ''
-  Write-Host 'Git 和 Node.js 已就绪，现在可以正常使用 Run。' -ForegroundColor Green
+  Write-Host '  ✓  Git 和 Node.js 已就绪，现在可以正常使用 Run。' -ForegroundColor Green
+  Write-Host ''
 } catch {
   Write-Host ''
-  Write-Host "安装失败：$($_.Exception.Message)" -ForegroundColor Red
+  Write-Host ("  ✗  安装失败：{0}" -f $_.Exception.Message) -ForegroundColor Red
+  Write-Host ''
+  Pause-IfInteractive '按 Enter 退出...'
   exit 1
 }
