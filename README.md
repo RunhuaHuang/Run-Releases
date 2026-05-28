@@ -1,6 +1,8 @@
 # Run Releases
 
-This repository only hosts public release artifacts for the Run desktop app.
+This repository hosts Run's public release assets and one-line installer entrypoints.
 
-- GitHub Releases in this repo are used by Run's built-in auto-update flow.
-- Product source code is maintained separately.
+- Latest desktop releases: https://github.com/RunhuaHuang/Run-Releases/releases/latest
+- macOS installer entrypoint: https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh
+- Windows installer entrypoint: https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1
+- Product source code is maintained separately in the private RunAI repository.
