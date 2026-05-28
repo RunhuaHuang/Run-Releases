@@ -18,6 +18,8 @@ $AppName = 'Run'
 $script:Step = 0
 $script:Total = 6
 $script:RunAlreadyRunning = $false
+$script:InstalledGitThisRun = $false
+$script:InstalledNodeThisRun = $false
 
 function Write-Banner {
   Write-Host ''
@@ -227,6 +229,7 @@ function Install-GitIfNeeded($TempDir) {
   if (-not $gitVersion) {
     throw 'Git 安装完成，但当前会话仍未检测到 git。'
   }
+  $script:InstalledGitThisRun = $true
   Write-Ok "Git 安装成功：$gitVersion"
 }
 
@@ -253,6 +256,7 @@ function Install-NodeIfNeeded($TempDir) {
   if (-not $nodeVersion) {
     throw 'Node.js 安装完成，但当前会话仍未检测到 node。'
   }
+  $script:InstalledNodeThisRun = $true
   Write-Ok "Node.js 安装成功：$nodeVersion"
 }
 
@@ -325,6 +329,24 @@ function Get-LatestWindowsAsset {
 
 function Get-RunProcesses {
   return @(Get-Process -Name 'Run' -ErrorAction SilentlyContinue)
+}
+
+function Restart-RunIfNeeded($RunExe) {
+  if (-not $RunExe) { return $false }
+  if (-not ($script:InstalledGitThisRun -or $script:InstalledNodeThisRun)) { return $false }
+
+  $running = Get-RunProcesses
+  if ($running.Count -gt 0) {
+    Write-Info '检测到本轮补齐了 Git/Node.js，正在重启 Run 以加载最新运行时...'
+    foreach ($proc in $running) {
+      try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+    }
+    Start-Sleep -Seconds 2
+  }
+
+  Start-Process -FilePath $RunExe | Out-Null
+  Write-Ok '已重启 Run'
+  return $true
 }
 
 function Find-RunExecutable {
@@ -454,19 +476,23 @@ try {
   }
 
   $runExe = Find-RunExecutable
-  $runningRun = Get-RunProcesses
-  if ($runningRun.Count -gt 0) {
-    if ($script:RunAlreadyRunning) {
-      Write-Ok '检测到安装器已自动启动 Run，脚本将跳过重复启动。'
-    } else {
-      Write-Ok '检测到 Run 已在运行，脚本将跳过重复启动。'
-    }
-  } elseif ($runExe) {
-    Write-Info '正在启动 Run...'
-    Start-Process -FilePath $runExe | Out-Null
-    Write-Ok "已启动 $runExe"
+  if (Restart-RunIfNeeded $runExe) {
+    # already restarted above
   } else {
-    Write-Warn '未定位到 Run.exe，请从开始菜单手动启动 Run。'
+    $runningRun = Get-RunProcesses
+    if ($runningRun.Count -gt 0) {
+      if ($script:RunAlreadyRunning) {
+        Write-Ok '检测到安装器已自动启动 Run，脚本将跳过重复启动。'
+      } else {
+        Write-Ok '检测到 Run 已在运行，脚本将跳过重复启动。'
+      }
+    } elseif ($runExe) {
+      Write-Info '正在启动 Run...'
+      Start-Process -FilePath $runExe | Out-Null
+      Write-Ok "已启动 $runExe"
+    } else {
+      Write-Warn '未定位到 Run.exe，请从开始菜单手动启动 Run。'
+    }
   }
 
   Write-Host ''
