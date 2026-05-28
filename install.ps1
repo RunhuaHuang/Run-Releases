@@ -190,6 +190,20 @@ function Refresh-Path {
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
+function Wait-InstallerProcess($Process, $Label = '等待安装器完成') {
+  if (-not $Process) { return }
+  while ($true) {
+    try {
+      $Process.Refresh()
+      if ($Process.HasExited) { break }
+    } catch {
+      break
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  Write-Host ''
+}
+
 function Install-GitIfNeeded($TempDir) {
   $gitVersion = Get-CommandVersion 'git'
   if ($gitVersion) {
@@ -360,11 +374,13 @@ function Install-Run($TempDir) {
   switch -Regex ($latest.Name) {
     '\.msi$' {
       Write-Warn '即将打开 Windows Installer 安装界面，请在弹出的向导中完成安装。'
-      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/passive', '/norestart' -Wait -PassThru
+      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/passive', '/norestart' -PassThru
+      Wait-InstallerProcess $process '等待 Windows Installer 完成'
     }
     default {
       Write-Warn '即将打开 Run 安装向导，请不要关闭安装窗口，并按向导完成安装。'
-      $process = Start-Process -FilePath $installerPath -Wait -PassThru
+      $process = Start-Process -FilePath $installerPath -PassThru
+      Wait-InstallerProcess $process '等待 Run 安装向导完成'
     }
   }
 
