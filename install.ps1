@@ -233,10 +233,48 @@ function Install-NodeIfNeeded($TempDir) {
   Write-Ok "Node.js 安装成功：$nodeVersion"
 }
 
+function Resolve-LatestReleaseTag {
+  $latestResponse = Invoke-WebRequest -Uri "$ReleasesBase/latest" -MaximumRedirection 10 -UseBasicParsing
+
+  $candidateUrls = @()
+  if ($latestResponse.BaseResponse -and $latestResponse.BaseResponse.ResponseUri) {
+    $candidateUrls += $latestResponse.BaseResponse.ResponseUri.AbsoluteUri
+    $candidateUrls += $latestResponse.BaseResponse.ResponseUri.AbsolutePath
+  }
+  if ($latestResponse.Headers) {
+    if ($latestResponse.Headers.Location) {
+      $candidateUrls += $latestResponse.Headers.Location
+    }
+    if ($latestResponse.Headers.'Content-Location') {
+      $candidateUrls += $latestResponse.Headers.'Content-Location'
+    }
+  }
+  if ($latestResponse.Links) {
+    foreach ($link in $latestResponse.Links) {
+      if ($link.href) { $candidateUrls += $link.href }
+    }
+  }
+
+  foreach ($candidate in $candidateUrls | Where-Object { $_ }) {
+    if ($candidate -match 'v\d+\.\d+\.\d+') {
+      return $Matches[0]
+    }
+  }
+
+  $content = ''
+  if ($latestResponse.Content) {
+    $content = [string]$latestResponse.Content
+  }
+  if ($content -match '/releases/tag/(v\d+\.\d+\.\d+)') {
+    return $Matches[1]
+  }
+
+  throw '无法解析 GitHub latest release 标签。'
+}
+
 function Get-LatestWindowsAsset {
   Write-Info '正在查询最新 Run 版本...'
-  $latestResponse = Invoke-WebRequest -Uri "$ReleasesBase/latest" -MaximumRedirection 10 -UseBasicParsing
-  $latestTag = Split-Path $latestResponse.BaseResponse.ResponseUri.AbsolutePath -Leaf
+  $latestTag = Resolve-LatestReleaseTag
   if (-not ($latestTag -match '^v\d+\.\d+\.\d+$')) {
     throw "当前没有可安装的 Run 正式版本（解析到的 release: $latestTag）。请等待 Run-Releases 发布 vX.Y.Z 正式版本后重试。"
   }
