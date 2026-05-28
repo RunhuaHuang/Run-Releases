@@ -510,6 +510,7 @@ try {
   } else {
     Write-Host '  ✓  依赖已齐全，无需重启 Run，现在可以正常使用。' -ForegroundColor Green
   }
+  Write-Host '  ✓  现在可以关闭这个 PowerShell 窗口，直接使用 Run。' -ForegroundColor Green
   Write-Host ''
 } catch {
   Write-Host ''
