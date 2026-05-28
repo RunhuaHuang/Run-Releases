@@ -32,6 +32,8 @@ function Write-Banner {
   Write-Host '    ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝' -ForegroundColor Cyan
   Write-Host '    智能 AI 桌面助理  ·  Windows 安装向导' -ForegroundColor DarkGray
   Write-Host '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor DarkGray
+  Write-Host '    ⚠  全程会尽量自动继续；如果下载或安装后终端没有继续，请按一次 Enter。' -ForegroundColor Yellow
+  Write-Host '    ⚠  Run 安装向导请使用默认路径，不要修改！不要修改！' -ForegroundColor Yellow
 }
 
 function Write-Step($Message) {
@@ -120,6 +122,7 @@ function Get-CommandVersion($Command, $VersionArgs = '--version') {
 
 function Download-File($Url, $Destination, $Label) {
   Write-Info $Label
+  Write-Warn '下载完成后通常会自动继续；如果终端没有继续，请按一次 Enter。'
 
   $request = [System.Net.HttpWebRequest]::Create($Url)
   $request.AllowAutoRedirect = $true
@@ -407,7 +410,7 @@ function Install-Run($TempDir) {
     default {
       Write-Warn '即将打开 Run 安装向导，请按向导完成安装。'
       Write-Warn '请务必安装到默认路径，不要修改！不要修改！'
-      Write-Dim  '    正常情况下关闭安装窗口后脚本会自动继续；如果终端没有继续，请按一次 Enter。'
+      Write-Warn '关闭安装窗口后通常会自动继续；如果终端没有继续，请按一次 Enter。'
       $process = Start-Process -FilePath $installerPath -PassThru
       Wait-InstallerProcess $process '等待 Run 安装向导完成'
     }
@@ -503,14 +506,14 @@ try {
   }
 
   Write-Host ''
+  Write-Host '  ✓  现在可以关闭这个 PowerShell 窗口。' -ForegroundColor Green
   if ($script:RestartedRunThisRun) {
-    Write-Host '  ✓  本轮已补装依赖，Run 已自动重启，现在可以正常使用。' -ForegroundColor Green
+    Write-Host '  ✓  本轮已补装依赖，Run 已自动重启，可以正常使用。' -ForegroundColor Green
   } elseif ($script:InstalledGitThisRun -or $script:InstalledNodeThisRun) {
-    Write-Host '  ✓  依赖已补齐，Run 现在可以正常使用。' -ForegroundColor Green
+    Write-Host '  ✓  依赖已补齐，可以正常使用 Run。' -ForegroundColor Green
   } else {
-    Write-Host '  ✓  依赖已齐全，无需重启 Run，现在可以正常使用。' -ForegroundColor Green
+    Write-Host '  ✓  依赖已齐全，无需重启 Run，可以正常使用。' -ForegroundColor Green
   }
-  Write-Host '  ✓  现在可以关闭这个 PowerShell 窗口，直接使用 Run。' -ForegroundColor Green
   Write-Host ''
 } catch {
   Write-Host ''
