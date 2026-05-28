@@ -17,6 +17,7 @@ $AppName = 'Run'
 
 $script:Step = 0
 $script:Total = 6
+$script:RunAlreadyRunning = $false
 
 function Write-Banner {
   Write-Host ''
@@ -261,6 +262,10 @@ function Get-LatestWindowsAsset {
   throw '未找到 Windows x64 安装包。'
 }
 
+function Get-RunProcesses {
+  return @(Get-Process -Name 'Run' -ErrorAction SilentlyContinue)
+}
+
 function Find-RunExecutable {
   $programFilesX86 = [System.Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
   $candidates = @(
@@ -325,7 +330,15 @@ function Install-Run($TempDir) {
     throw '安装程序已退出，但未检测到 Run.exe。请确认是否在安装向导中取消了安装，或安装到了非默认路径。'
   }
 
-  Write-Ok 'Run 安装完成'
+  Start-Sleep -Seconds 2
+  $runningAfterInstall = Get-RunProcesses
+  if ($runningAfterInstall.Count -gt 0) {
+    $script:RunAlreadyRunning = $true
+    Write-Ok 'Run 安装完成（安装器已自动启动应用）'
+  } else {
+    $script:RunAlreadyRunning = $false
+    Write-Ok 'Run 安装完成'
+  }
   Write-Ok "安装位置：$runExe"
 }
 
@@ -373,7 +386,14 @@ try {
   Write-Ok '临时文件已清理'
 
   $runExe = Find-RunExecutable
-  if ($runExe) {
+  $runningRun = Get-RunProcesses
+  if ($runningRun.Count -gt 0) {
+    if ($script:RunAlreadyRunning) {
+      Write-Ok '检测到安装器已自动启动 Run，脚本将跳过重复启动。'
+    } else {
+      Write-Ok '检测到 Run 已在运行，脚本将跳过重复启动。'
+    }
+  } elseif ($runExe) {
     Write-Info '正在启动 Run...'
     Start-Process -FilePath $runExe | Out-Null
     Write-Ok "已启动 $runExe"
