@@ -32,7 +32,8 @@ function Write-Banner {
   Write-Host '    ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝' -ForegroundColor Cyan
   Write-Host '    智能 AI 桌面助理  ·  Windows 安装向导' -ForegroundColor DarkGray
   Write-Host '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor DarkGray
-  Write-Host '    ⚠  全程会尽量自动继续；如果下载或安装后终端没有继续，请按一次 Enter。' -ForegroundColor Yellow
+  Write-Host '    ⚠  本次安装设计为全自动进行；受限于 Windows 系统与安装器行为差异，' -ForegroundColor Yellow
+  Write-Host '    ⚠  如下载或安装完成后终端未自动继续，请尝试手动按两次 Enter 继续。' -ForegroundColor Yellow
   Write-Host '    ⚠  Run 安装向导请使用默认路径，不要修改！不要修改！' -ForegroundColor Yellow
 }
 
@@ -122,7 +123,7 @@ function Get-CommandVersion($Command, $VersionArgs = '--version') {
 
 function Download-File($Url, $Destination, $Label) {
   Write-Info $Label
-  Write-Warn '下载完成后通常会自动继续；如果终端没有继续，请按一次 Enter。'
+  Write-Warn '下载完成后通常会自动继续；如果终端没有继续，请按两次 Enter。'
 
   $request = [System.Net.HttpWebRequest]::Create($Url)
   $request.AllowAutoRedirect = $true
@@ -211,6 +212,32 @@ function Wait-InstallerProcess($Process, $Label = '等待安装器完成') {
     Start-Sleep -Milliseconds 500
   }
   Write-Host ''
+}
+
+function Start-RunInstallerWithRetry($InstallerPath) {
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    if ($attempt -eq 1) {
+      Write-Info '正在启动 Run 安装向导...'
+    } else {
+      Write-Warn 'Run 安装向导上次未能正常启动，正在自动重试一次...'
+      Start-Sleep -Seconds 2
+    }
+
+    try {
+      $process = Start-Process -FilePath $InstallerPath -PassThru
+      Wait-InstallerProcess $process '等待 Run 安装向导完成'
+
+      if ($process.ExitCode -eq 0) {
+        return $process
+      }
+
+      Write-Warn "Run 安装向导异常退出，退出码：$($process.ExitCode)"
+    } catch {
+      Write-Warn ("Run 安装向导启动失败：{0}" -f $_.Exception.Message)
+    }
+  }
+
+  throw 'Run 安装向导连续两次未能正常完成。请重新运行本安装命令重试。'
 }
 
 function Install-GitIfNeeded($TempDir) {
@@ -410,14 +437,13 @@ function Install-Run($TempDir) {
     default {
       Write-Warn '即将打开 Run 安装向导，请按向导完成安装。'
       Write-Warn '请务必安装到默认路径，不要修改！不要修改！'
-      Write-Warn '关闭安装窗口后通常会自动继续；如果终端没有继续，请按一次 Enter。'
-      $process = Start-Process -FilePath $installerPath -PassThru
-      Wait-InstallerProcess $process '等待 Run 安装向导完成'
+      Write-Warn '关闭安装窗口后通常会自动继续；如果终端没有继续，请按两次 Enter。'
+      $process = Start-RunInstallerWithRetry $installerPath
     }
   }
 
   if ($process.ExitCode -ne 0) {
-    throw "Run 安装失败，退出码：$($process.ExitCode)"
+    throw "Run 安装失败，退出码：$($process.ExitCode)。请重新运行本安装命令重试。"
   }
 
   $runExe = Find-RunExecutable
@@ -518,6 +544,9 @@ try {
 } catch {
   Write-Host ''
   Write-Host ("  ✗  安装失败：{0}" -f $_.Exception.Message) -ForegroundColor Red
+  Write-Host ''
+  Write-Warn '如果这是下载超时、安装器未弹出、安装器异常退出或终端未继续，请重新运行下面的命令重试：'
+  Write-Host '     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex' -ForegroundColor Gray
   Write-Host ''
   Pause-IfInteractive '按 Enter 退出...'
   exit 1
