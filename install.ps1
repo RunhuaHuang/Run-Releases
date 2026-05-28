@@ -242,6 +242,12 @@ function Select-GhProxy {
 function Get-LatestYmlInfo {
   $url = Convert-GhUrl "$ReleasesBase/latest/download/latest.yml"
   $content = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20).Content
+  # Windows PowerShell 5.1 下，GitHub 以 application/octet-stream 返回 latest.yml，
+  # Invoke-WebRequest 的 .Content 会是 byte[]（而非字符串），需手动按 UTF-8 解码，
+  # 否则按行 split/正则匹配会全部失败，导致“无法解析”。
+  if ($content -is [byte[]]) {
+    $content = [System.Text.Encoding]::UTF8.GetString($content)
+  }
   $version = $null
   $name = $null
   $sha512 = $null
