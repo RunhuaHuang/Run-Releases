@@ -63,6 +63,15 @@ function Pause-IfInteractive($Prompt = '按 Enter 结束...') {
   }
 }
 
+function Prompt-KeepDownloads {
+  try {
+    $answer = Read-Host '是否保留本次下载的安装包？默认自动删除，输入 K 后回车可保留'
+    return $answer -match '^[Kk]$'
+  } catch {
+    return $false
+  }
+}
+
 function Format-Bytes([long]$Bytes) {
   if ($Bytes -lt 1KB) { return "${Bytes} B" }
   if ($Bytes -lt 1MB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
@@ -420,8 +429,13 @@ try {
     throw 'Node.js 尚未就绪，Run 还不能正常使用。'
   }
 
-  Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-  Write-Ok '临时文件已清理'
+  $keepDownloads = Prompt-KeepDownloads
+  if ($keepDownloads) {
+    Write-Ok "已保留下载文件：$tempDir"
+  } else {
+    Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+    Write-Ok '安装包已自动删除'
+  }
 
   $runExe = Find-RunExecutable
   $runningRun = Get-RunProcesses

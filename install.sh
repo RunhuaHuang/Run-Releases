@@ -131,6 +131,18 @@ _wait_for_enter() {
   read -r </dev/tty 2>/dev/null || sleep 3
 }
 
+_prompt_keep_downloads() {
+  local prompt="${1:-是否保留本次下载的安装包？默认自动删除，输入 k 后回车可保留：}"
+  if [[ ! -t 0 && ! -r /dev/tty ]]; then
+    return 1
+  fi
+  echo ""
+  echo -e "    ${DIM}${prompt}${RESET}"
+  local reply=""
+  read -r reply </dev/tty 2>/dev/null || reply=""
+  [[ "$reply" =~ ^[Kk]$ ]]
+}
+
 # ══════════════════════════════════════════════════════════════════
 # 页眉
 # ══════════════════════════════════════════════════════════════════
@@ -314,8 +326,16 @@ _step "完成配置"
 xattr -dr com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
 _ok "已移除 Gatekeeper 安全隔离"
 
-rm -rf "$TMP_DIR" 2>/dev/null || true
-_ok "临时文件已清理"
+KEEP_DOWNLOADS=0
+if _prompt_keep_downloads; then
+  KEEP_DOWNLOADS=1
+fi
+if [[ "$KEEP_DOWNLOADS" -eq 1 ]]; then
+  _ok "已保留下载文件：${TMP_DIR}"
+else
+  rm -rf "$TMP_DIR" 2>/dev/null || true
+  _ok "安装包已自动删除"
+fi
 
 sleep 0.3
 _info "正在首次启动 Run..."
