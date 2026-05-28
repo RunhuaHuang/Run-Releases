@@ -13,6 +13,18 @@ GITHUB_OWNER="RunhuaHuang"
 GITHUB_REPO="Run-Releases"
 GITHUB_RELEASES_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases"
 MAC_FALLBACK_URL="https://ug.link/piercehome/filemgr/share-download/?id=3ad35dc82660496488fb6ca44de1ea34"
+
+# GitHub 代理前缀（无代理用户回退用）。GitHub 直连不通时，按顺序探测，
+# 取第一个可用的，之后所有 github.com 下载都套上该前缀。
+# 这些是第三方公共代理，仅作兜底，可能不定期失效，失效时更新此列表即可。
+GH_PROXIES=(
+  "https://ghproxy.com"
+  "https://ghfast.top"
+  "https://gh-proxy.com"
+  "https://gh.ddlc.top"
+)
+# 运行时确定：空=直连 GitHub；非空=代理前缀（形如 https://ghfast.top）
+GH_PROXY=""
 NODE_VERSION="24.15.0"
 NODE_PKG_NAME="node-v${NODE_VERSION}.pkg"
 NODE_RELEASE_TAG="bootstrap"
@@ -93,6 +105,32 @@ _check_github_access() {
     "https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
 }
 
+# 把一个 github.com 下载链接按需套上代理前缀。
+# GH_PROXY 为空时原样返回（直连）。
+_gh() {
+  if [[ -n "$GH_PROXY" ]]; then
+    echo "${GH_PROXY}/$1"
+  else
+    echo "$1"
+  fi
+}
+
+# GitHub 直连失败时调用：按顺序探测代理，找到第一个能拉到 latest-mac.yml 的就用它。
+# 成功设置 GH_PROXY 并返回 0；全部不可用返回 1。
+_select_gh_proxy() {
+  local probe="${GITHUB_RELEASES_BASE}/latest/download/latest-mac.yml"
+  local proxy
+  for proxy in "${GH_PROXIES[@]}"; do
+    if curl --fail --location --silent --show-error \
+        --output /dev/null --max-time 15 \
+        "${proxy}/${probe}"; then
+      GH_PROXY="$proxy"
+      return 0
+    fi
+  done
+  return 1
+}
+
 _show_github_fallback() {
   echo ""
   echo -e "  ${YELLOW}${BOLD}无法连接 GitHub。${RESET}"
@@ -108,20 +146,39 @@ _show_github_fallback() {
   exit 1
 }
 
+# 从稳定的 latest-mac.yml 读取最新版本号（直连/代理通用，不依赖重定向解析）。
+# 返回形如 v0.10.12。
 _resolve_latest_release_tag() {
-  local latest_url effective_url
-  latest_url="${GITHUB_RELEASES_BASE}/latest"
-  effective_url=$(curl --fail --location --silent --show-error \
-    --output /dev/null \
-    --write-out '%{url_effective}' \
-    "$latest_url") || _fail "无法解析最新版本跳转地址" "network"
-  basename "$effective_url"
+  local yml_url ver
+  yml_url=$(_gh "${GITHUB_RELEASES_BASE}/latest/download/latest-mac.yml")
+  ver=$(curl --fail --location --silent --show-error --max-time 20 "$yml_url" \
+    | grep -E '^version:' | head -1 | awk '{print $2}' | tr -d '\r')
+  [[ -n "$ver" ]] || _fail "无法解析最新版本号" "network"
+  echo "v${ver}"
 }
 
 _verify_sha256() {
   local file="$1" expected="$2" actual
   actual=$(shasum -a 256 "$file" | awk '{print $1}')
   [[ "$actual" == "$expected" ]] || _fail "文件校验失败：$(basename "$file")"
+}
+
+# 校验文件的 base64 编码 sha512（与 latest-mac.yml 中的格式一致）。
+_verify_sha512_b64() {
+  local file="$1" expected="$2" actual
+  actual=$(openssl dgst -sha512 -binary "$file" | openssl base64 -A)
+  [[ "$actual" == "$expected" ]] || _fail "文件校验失败：$(basename "$file")（完整性校验不通过，可能下载被篡改或损坏）"
+}
+
+# 从 latest-mac.yml 中取出指定资产名对应的 base64 sha512。
+_get_asset_sha512() {
+  local asset="$1" yml_url
+  yml_url=$(_gh "${GITHUB_RELEASES_BASE}/latest/download/latest-mac.yml")
+  curl --fail --location --silent --show-error --max-time 20 "$yml_url" \
+    | awk -v name="$asset" '
+        $1=="-" && $2=="url:" { cur=$3; next }
+        $1=="sha512:" && cur==name { print $2; exit }
+      '
 }
 
 # 从 tty 读取用户输入（即使是 curl | bash 场景也能工作）
@@ -182,10 +239,19 @@ _ok "curl 已就绪"
 _spinner_start "正在检测 GitHub 连通性..."
 if _check_github_access; then
   _spinner_stop
-  _ok "GitHub 连通性正常"
+  _ok "GitHub 连通性正常（直连下载）"
 else
   _spinner_stop
-  _show_github_fallback
+  _warn "GitHub 直连失败，正在尝试国内代理通道..."
+  _spinner_start "正在探测可用代理..."
+  if _select_gh_proxy; then
+    _spinner_stop
+    _ok "已启用代理通道：${GH_PROXY}"
+    _warn "代理为第三方公共服务，速度可能较慢，请耐心等待。"
+  else
+    _spinner_stop
+    _show_github_fallback
+  fi
 fi
 
 
@@ -203,6 +269,7 @@ fi
 VERSION_NUM="${VERSION#v}"
 ASSET_NAME="Run-${VERSION_NUM}-${DMG_ARCH}.dmg"
 ASSET_URL="${GITHUB_RELEASES_BASE}/download/${VERSION}/${ASSET_NAME}"
+ASSET_SHA512=$(_get_asset_sha512 "$ASSET_NAME")
 _ok "最新版本：${BOLD}${VERSION}${RESET}"
 _ok "安装包：${ASSET_NAME}"
 
@@ -215,12 +282,24 @@ TMP_DIR="${TMP_DIR:-$(mktemp -d)}"
 DMG_PATH="${TMP_DIR}/${ASSET_NAME}"
 
 echo ""
-  _badge_gh "从 GitHub 下载中..."
-  _download_with_progress "$ASSET_URL" "$DMG_PATH" "正在下载 ${ASSET_NAME}"
+  if [[ -n "$GH_PROXY" ]]; then
+    _badge_gh "通过代理（${GH_PROXY}）下载中..."
+  else
+    _badge_gh "从 GitHub 下载中..."
+  fi
+  _download_with_progress "$(_gh "$ASSET_URL")" "$DMG_PATH" "正在下载 ${ASSET_NAME}"
 
 echo ""
 [[ -s "$DMG_PATH" ]] || _fail "下载文件为空，网络可能中断，请重试"
 _ok "下载完成（$(du -sh "$DMG_PATH" | cut -f1)）"
+
+# 完整性校验：与 latest-mac.yml 中的 sha512 比对（尤其是走代理时防篡改）
+if [[ -n "$ASSET_SHA512" ]]; then
+  _verify_sha512_b64 "$DMG_PATH" "$ASSET_SHA512"
+  _ok "安装包完整性校验通过"
+else
+  _warn "未能取得安装包校验值，跳过完整性校验"
+fi
 
 # 挂载 DMG
 MOUNT_POINT=$(mktemp -d)
@@ -298,7 +377,7 @@ else
   NODE_PKG_PATH="${TMP_DIR}/${NODE_PKG_NAME}"
 
   _badge_gh "从固定公开链接下载 Node.js v${NODE_VERSION}..."
-  _download_with_progress "$NODE_PKG_URL" "$NODE_PKG_PATH" "正在下载 ${NODE_PKG_NAME}"
+  _download_with_progress "$(_gh "$NODE_PKG_URL")" "$NODE_PKG_PATH" "正在下载 ${NODE_PKG_NAME}"
 
   echo ""
   [[ -s "$NODE_PKG_PATH" ]] || _fail "Node.js 安装包下载不完整"

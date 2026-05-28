@@ -15,6 +15,18 @@ $NodeInstallerUrl = "$ReleasesBase/download/$BootstrapTag/$NodeInstallerName"
 $NodeInstallerSha256 = 'feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806'
 $AppName = 'Run'
 
+# GitHub 代理前缀（无代理用户回退用）。GitHub 直连不通时，按顺序探测，
+# 取第一个可用的，之后所有 github.com 下载都套上该前缀。
+# 第三方公共代理，仅作兜底，失效时更新此列表即可。
+$GhProxies = @(
+  'https://ghproxy.com',
+  'https://ghfast.top',
+  'https://gh-proxy.com',
+  'https://gh.ddlc.top'
+)
+# 运行时确定：空=直连；非空=代理前缀（形如 https://ghfast.top）
+$script:GhProxy = ''
+
 $script:Step = 0
 $script:Total = 6
 $script:RunAlreadyRunning = $false
@@ -196,6 +208,60 @@ function Assert-Sha256($Path, $Expected) {
   }
 }
 
+# 校验文件的 base64 sha512（与 latest.yml 中的格式一致）
+function Assert-Sha512Base64($Path, $Expected) {
+  $bytes = [System.Security.Cryptography.SHA512]::Create().ComputeHash([System.IO.File]::ReadAllBytes($Path))
+  $actual = [System.Convert]::ToBase64String($bytes)
+  if ($actual -ne $Expected) {
+    throw "文件校验失败：$([IO.Path]::GetFileName($Path))（完整性校验不通过，可能下载被篡改或损坏）"
+  }
+}
+
+# 按需把 github.com 链接套上代理前缀。$script:GhProxy 为空时原样返回。
+function Convert-GhUrl($Url) {
+  if ([string]::IsNullOrEmpty($script:GhProxy)) { return $Url }
+  return "$script:GhProxy/$Url"
+}
+
+# GitHub 直连失败时调用：按顺序探测代理，找到第一个能拉到 latest.yml 的就用它。
+function Select-GhProxy {
+  $probe = "$ReleasesBase/latest/download/latest.yml"
+  foreach ($proxy in $GhProxies) {
+    try {
+      Invoke-WebRequest -Uri "$proxy/$probe" -Method Head -UseBasicParsing -TimeoutSec 15 | Out-Null
+      $script:GhProxy = $proxy
+      return $true
+    } catch {
+      continue
+    }
+  }
+  return $false
+}
+
+# 从 latest.yml 读取最新 Windows 安装包信息（版本 / 文件名 / sha512），直连+代理通用。
+function Get-LatestYmlInfo {
+  $url = Convert-GhUrl "$ReleasesBase/latest/download/latest.yml"
+  $content = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20).Content
+  $version = $null
+  $name = $null
+  $sha512 = $null
+  foreach ($line in ($content -split "`n")) {
+    $line = $line.TrimEnd("`r")
+    if ($line -match '^version:\s*(.+)$') { $version = $Matches[1].Trim() }
+    elseif ($line -match '^path:\s*(.+)$') { $name = $Matches[1].Trim() }
+    elseif (-not $sha512 -and $line -match '^\s*sha512:\s*(.+)$') { $sha512 = $Matches[1].Trim() }
+  }
+  if (-not $version -or -not $name) {
+    throw '无法从 latest.yml 解析最新 Windows 安装包信息。'
+  }
+  return [PSCustomObject]@{
+    Version = "v$version"
+    Name = $name
+    Url = "$ReleasesBase/download/v$version/$name"
+    Sha512 = $sha512
+  }
+}
+
 function Refresh-Path {
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
 }
@@ -248,7 +314,7 @@ function Install-GitIfNeeded($TempDir) {
   }
 
   $installer = Join-Path $TempDir $GitInstallerName
-  Download-File $GitInstallerUrl $installer '正在下载 Git 安装包...'
+  Download-File (Convert-GhUrl $GitInstallerUrl) $installer '正在下载 Git 安装包...'
   Assert-Sha256 $installer $GitInstallerSha256
   Write-Ok 'Git 安装包校验通过'
 
@@ -275,7 +341,7 @@ function Install-NodeIfNeeded($TempDir) {
   }
 
   $installer = Join-Path $TempDir $NodeInstallerName
-  Download-File $NodeInstallerUrl $installer '正在下载 Node.js 安装包...'
+  Download-File (Convert-GhUrl $NodeInstallerUrl) $installer '正在下载 Node.js 安装包...'
   Assert-Sha256 $installer $NodeInstallerSha256
   Write-Ok 'Node.js 安装包校验通过'
 
@@ -292,73 +358,6 @@ function Install-NodeIfNeeded($TempDir) {
   }
   $script:InstalledNodeThisRun = $true
   Write-Ok "Node.js 安装成功：$nodeVersion"
-}
-
-function Resolve-LatestReleaseTag {
-  $latestResponse = Invoke-WebRequest -Uri "$ReleasesBase/latest" -MaximumRedirection 10 -UseBasicParsing
-
-  $candidateUrls = @()
-  if ($latestResponse.BaseResponse -and $latestResponse.BaseResponse.ResponseUri) {
-    $candidateUrls += $latestResponse.BaseResponse.ResponseUri.AbsoluteUri
-    $candidateUrls += $latestResponse.BaseResponse.ResponseUri.AbsolutePath
-  }
-  if ($latestResponse.Headers) {
-    if ($latestResponse.Headers.Location) {
-      $candidateUrls += $latestResponse.Headers.Location
-    }
-    if ($latestResponse.Headers.'Content-Location') {
-      $candidateUrls += $latestResponse.Headers.'Content-Location'
-    }
-  }
-  if ($latestResponse.Links) {
-    foreach ($link in $latestResponse.Links) {
-      if ($link.href) { $candidateUrls += $link.href }
-    }
-  }
-
-  foreach ($candidate in $candidateUrls | Where-Object { $_ }) {
-    if ($candidate -match 'v\d+\.\d+\.\d+') {
-      return $Matches[0]
-    }
-  }
-
-  $content = ''
-  if ($latestResponse.Content) {
-    $content = [string]$latestResponse.Content
-  }
-  if ($content -match '/releases/tag/(v\d+\.\d+\.\d+)') {
-    return $Matches[1]
-  }
-
-  throw '无法解析 GitHub latest release 标签。'
-}
-
-function Get-LatestWindowsAsset {
-  Write-Info '正在查询最新 Run 版本...'
-  $latestTag = Resolve-LatestReleaseTag
-  if (-not ($latestTag -match '^v\d+\.\d+\.\d+$')) {
-    throw "当前没有可安装的 Run 正式版本（解析到的 release: $latestTag）。请等待 Run-Releases 发布 vX.Y.Z 正式版本后重试。"
-  }
-  $version = $latestTag.Substring(1)
-  $candidates = @(
-    "Run-Setup-$version.exe",
-    "Run-$version-x64.exe",
-    "Run-$version-x64.msi"
-  )
-  foreach ($name in $candidates) {
-    $url = "$ReleasesBase/download/$latestTag/$name"
-    try {
-      Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 20 | Out-Null
-      return [PSCustomObject]@{
-        Version = $latestTag
-        Name = $name
-        Url = $url
-      }
-    } catch {
-      continue
-    }
-  }
-  throw '未找到 Windows x64 安装包。'
 }
 
 function Get-RunProcesses {
@@ -420,12 +419,24 @@ function Find-RunExecutable {
 }
 
 function Install-Run($TempDir) {
-  $latest = Get-LatestWindowsAsset
+  Write-Info '正在查询最新 Run 版本...'
+  $latest = Get-LatestYmlInfo
+  if (-not ($latest.Version -match '^v\d+\.\d+\.\d+$')) {
+    throw "当前没有可安装的 Run 正式版本（解析到的 release: $($latest.Version)）。请等待 Run-Releases 发布 vX.Y.Z 正式版本后重试。"
+  }
   Write-Ok "最新版本：$($latest.Version)"
   Write-Ok "安装包：$($latest.Name)"
 
   $installerPath = Join-Path $TempDir $latest.Name
-  Download-File $latest.Url $installerPath '正在下载 Run Windows 安装包...'
+  Download-File (Convert-GhUrl $latest.Url) $installerPath '正在下载 Run Windows 安装包...'
+
+  # 完整性校验：与 latest.yml 中的 sha512 比对（尤其是走代理时防篡改）
+  if ($latest.Sha512) {
+    Assert-Sha512Base64 $installerPath $latest.Sha512
+    Write-Ok '安装包完整性校验通过'
+  } else {
+    Write-Warn '未能取得安装包校验值，跳过完整性校验'
+  }
 
   Write-Info '准备启动 Run 安装程序...'
   switch -Regex ($latest.Name) {
@@ -478,9 +489,15 @@ try {
 
   Write-Step '检测 GitHub 连通性'
   if (Test-GitHubAccess) {
-    Write-Ok 'GitHub 连通性正常'
+    Write-Ok 'GitHub 连通性正常（直连下载）'
   } else {
-    Show-GitHubFallback
+    Write-Warn 'GitHub 直连失败，正在尝试国内代理通道...'
+    if (Select-GhProxy) {
+      Write-Ok "已启用代理通道：$script:GhProxy"
+      Write-Warn '代理为第三方公共服务，速度可能较慢，请耐心等待。'
+    } else {
+      Show-GitHubFallback
+    }
   }
 
   $tempDir = Join-Path ([IO.Path]::GetTempPath()) ('run-bootstrap-' + [Guid]::NewGuid().ToString('N'))
