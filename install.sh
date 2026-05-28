@@ -132,11 +132,13 @@ _wait_for_enter() {
 }
 
 _prompt_keep_downloads() {
-  local prompt="${1:-是否保留本次下载的安装包？默认自动删除，输入 k 后回车可保留：}"
+  local prompt="${1:-是否保留本次下载的安装包？[直接回车=自动删除，输入 k 再回车=保留]}"
   if [[ ! -t 0 && ! -r /dev/tty ]]; then
     return 1
   fi
   echo ""
+  echo -e "    ${DIM}直接按 Enter：自动删除本次下载的安装包（推荐）${RESET}"
+  echo -e "    ${DIM}输入 k 后回车：保留安装包，便于排障或手动重装${RESET}"
   echo -e "    ${DIM}${prompt}${RESET}"
   local reply=""
   read -r reply </dev/tty 2>/dev/null || reply=""

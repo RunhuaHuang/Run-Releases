@@ -67,8 +67,11 @@ function Pause-IfInteractive($Prompt = '按 Enter 结束...') {
 }
 
 function Prompt-KeepDownloads {
+  Write-Host ''
+  Write-Dim '    直接按 Enter：自动删除本次下载的安装包（推荐）'
+  Write-Dim '    输入 K 后回车：保留安装包，便于排障或手动重装'
   try {
-    $answer = Read-Host '是否保留本次下载的安装包？默认自动删除，输入 K 后回车可保留'
+    $answer = Read-Host '    是否保留本次下载的安装包？[Enter=自动删除 / K=保留]'
     return $answer -match '^[Kk]$'
   } catch {
     return $false
@@ -402,7 +405,9 @@ function Install-Run($TempDir) {
       Wait-InstallerProcess $process '等待 Windows Installer 完成'
     }
     default {
-      Write-Warn '即将打开 Run 安装向导，请不要关闭安装窗口，并按向导完成安装。'
+      Write-Warn '即将打开 Run 安装向导，请按向导完成安装。'
+      Write-Warn '请务必安装到默认路径，不要修改！不要修改！'
+      Write-Dim  '    正常情况下关闭安装窗口后脚本会自动继续；如果终端没有继续，请按一次 Enter。'
       $process = Start-Process -FilePath $installerPath -PassThru
       Wait-InstallerProcess $process '等待 Run 安装向导完成'
     }
