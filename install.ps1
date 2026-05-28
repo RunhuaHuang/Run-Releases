@@ -28,6 +28,17 @@ function Write-Info($Message) {
   Write-Host "  [..] $Message" -ForegroundColor DarkCyan
 }
 
+function Write-Warn($Message) {
+  Write-Host "  [!!] $Message" -ForegroundColor Yellow
+}
+
+function Format-Bytes([long]$Bytes) {
+  if ($Bytes -lt 1KB) { return "${Bytes} B" }
+  if ($Bytes -lt 1MB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
+  if ($Bytes -lt 1GB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+  return ('{0:N2} GB' -f ($Bytes / 1GB))
+}
+
 function Ensure-Admin {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -49,7 +60,46 @@ function Get-CommandVersion($Command, $VersionArgs = '--version') {
 
 function Download-File($Url, $Destination, $Label) {
   Write-Info $Label
-  Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+
+  $request = [System.Net.HttpWebRequest]::Create($Url)
+  $request.AllowAutoRedirect = $true
+  $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+  $request.UserAgent = 'RunInstaller/1.0'
+
+  $response = $null
+  $stream = $null
+  $fileStream = $null
+  try {
+    $response = $request.GetResponse()
+    $stream = $response.GetResponseStream()
+    $fileStream = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+
+    $buffer = New-Object byte[] 1048576
+    $totalRead = 0L
+    $contentLength = [long]$response.ContentLength
+    $lastPercent = -1
+
+    while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      $fileStream.Write($buffer, 0, $read)
+      $totalRead += $read
+      if ($contentLength -gt 0) {
+        $percent = [int][Math]::Min(100, [Math]::Floor(($totalRead * 100) / $contentLength))
+        if ($percent -ne $lastPercent) {
+          Write-Progress -Activity $Label -Status (("{0}% ({1}/{2})" -f $percent, (Format-Bytes $totalRead), (Format-Bytes $contentLength))) -PercentComplete $percent
+          $lastPercent = $percent
+        }
+      } else {
+        Write-Progress -Activity $Label -Status ("已下载 {0}" -f (Format-Bytes $totalRead)) -PercentComplete 0
+      }
+    }
+
+    Write-Progress -Activity $Label -Completed
+    Write-Ok ("下载完成：{0}" -f (Format-Bytes $totalRead))
+  } finally {
+    if ($fileStream) { $fileStream.Dispose() }
+    if ($stream) { $stream.Dispose() }
+    if ($response) { $response.Dispose() }
+  }
 }
 
 function Test-GitHubAccess {
@@ -169,13 +219,15 @@ function Install-Run($TempDir) {
   $installerPath = Join-Path $TempDir $latest.Name
   Download-File $latest.Url $installerPath "正在下载 Run Windows 安装包..."
 
-  Write-Info '正在安装 Run...'
+  Write-Info '准备启动 Run 安装程序...'
   switch -Regex ($latest.Name) {
     '\.msi$' {
-      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/qn', '/norestart' -Wait -PassThru
+      Write-Warn '即将打开 Windows Installer 安装界面，请在弹出的向导中完成安装。'
+      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/passive', '/norestart' -Wait -PassThru
     }
     default {
-      $process = Start-Process -FilePath $installerPath -ArgumentList '/S' -Wait -PassThru
+      Write-Warn '即将打开 Run 安装向导，请不要关闭安装窗口，按向导完成安装。'
+      $process = Start-Process -FilePath $installerPath -Wait -PassThru
     }
   }
 
@@ -183,7 +235,13 @@ function Install-Run($TempDir) {
     throw "Run 安装失败，退出码：$($process.ExitCode)"
   }
 
+  $runExe = Find-RunExecutable
+  if (-not $runExe) {
+    throw '安装程序已退出，但未检测到 Run.exe。请确认是否在安装向导中取消了安装，或安装到了非默认路径。'
+  }
+
   Write-Ok 'Run 安装完成'
+  Write-Ok "安装位置：$runExe"
 }
 
 function Find-RunExecutable {
