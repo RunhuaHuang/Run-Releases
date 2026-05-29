@@ -15,6 +15,11 @@ set -euo pipefail
 GITHUB_OWNER="RunhuaHuang"
 GITHUB_REPO="Run-Releases"
 GITHUB_RELEASES_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases"
+# raw.githubusercontent.com 上的 VERSION 文件：版本号发现的通用通道。
+# 三家代理（gh-proxy.com / ghfast.top / ghproxy.net）都能代理 raw 与「带版本号的」
+# 资产下载，但只有前两家能代理 /releases/latest/download 的重定向链（ghproxy.net 会 502），
+# 所以版本发现一律走 raw VERSION，资产下载一律走 /releases/download/vX.Y.Z/ 带版本号路径。
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/main"
 MAC_FALLBACK_URL="https://ug.link/piercehome/filemgr/share-download/?id=3ad35dc82660496488fb6ca44de1ea34"
 
 # GitHub 代理前缀：由用户选择的安装命令决定，脚本内部不再做连通性探测。
@@ -111,12 +116,21 @@ _gh() {
   fi
 }
 
-# 从稳定的 latest-mac.yml 读取最新版本号（直连/代理通用，不依赖重定向解析）。
-# 返回形如 v0.10.12。
+# 读取最新版本号。优先走 raw 上的 VERSION 文件（三家代理通用），
+# 失败时回退到 /releases/latest/download/latest-mac.yml（直连及 gh-proxy.com/ghfast.top 可用）。
+# 返回形如 v0.10.18。
 _resolve_latest_release_tag() {
-  local yml_url ver
-  yml_url=$(_gh "${GITHUB_RELEASES_BASE}/latest/download/latest-mac.yml")
-  ver=$(curl --fail --location --silent --show-error --max-time 20 "$yml_url" \
+  local ver
+  # 通道一：raw VERSION 文件（最稳，所有代理都能代理 raw）
+  ver=$(curl --fail --location --silent --show-error --max-time 20 \
+    "$(_gh "${GITHUB_RAW_BASE}/VERSION")" 2>/dev/null \
+    | head -1 | tr -d '[:space:]')
+  if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "v${ver}"; return 0
+  fi
+  # 通道二：回退到 latest-mac.yml 的 version 字段
+  ver=$(curl --fail --location --silent --show-error --max-time 20 \
+    "$(_gh "${GITHUB_RELEASES_BASE}/latest/download/latest-mac.yml")" 2>/dev/null \
     | grep -E '^version:' | head -1 | awk '{print $2}' | tr -d '\r')
   [[ -n "$ver" ]] || _fail "无法解析最新版本号" "network"
   echo "v${ver}"
@@ -135,10 +149,11 @@ _verify_sha512_b64() {
   [[ "$actual" == "$expected" ]] || _fail "文件校验失败：$(basename "$file")（完整性校验不通过，可能下载被篡改或损坏）"
 }
 
-# 从 latest-mac.yml 中取出指定资产名对应的 base64 sha512。
+# 从指定版本的 latest-mac.yml 中取出指定资产名对应的 base64 sha512。
+# 用带版本号的路径（/releases/download/vX.Y.Z/latest-mac.yml），三家代理通用。
 _get_asset_sha512() {
-  local asset="$1" yml_url
-  yml_url=$(_gh "${GITHUB_RELEASES_BASE}/latest/download/latest-mac.yml")
+  local asset="$1" version="$2" yml_url
+  yml_url=$(_gh "${GITHUB_RELEASES_BASE}/download/${version}/latest-mac.yml")
   curl --fail --location --silent --show-error --max-time 20 "$yml_url" \
     | awk -v name="$asset" '
         $1=="-" && $2=="url:" { cur=$3; next }
@@ -224,7 +239,7 @@ fi
 VERSION_NUM="${VERSION#v}"
 ASSET_NAME="Run-${VERSION_NUM}-${DMG_ARCH}.dmg"
 ASSET_URL="${GITHUB_RELEASES_BASE}/download/${VERSION}/${ASSET_NAME}"
-ASSET_SHA512=$(_get_asset_sha512 "$ASSET_NAME")
+ASSET_SHA512=$(_get_asset_sha512 "$ASSET_NAME" "$VERSION")
 _ok "最新版本：${BOLD}${VERSION}${RESET}"
 _ok "安装包：${ASSET_NAME}"
 

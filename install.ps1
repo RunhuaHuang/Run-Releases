@@ -9,6 +9,11 @@ $ErrorActionPreference = 'Stop'
 $RepoOwner = 'RunhuaHuang'
 $RepoName = 'Run-Releases'
 $ReleasesBase = "https://github.com/$RepoOwner/$RepoName/releases"
+# raw.githubusercontent.com 上的 VERSION 文件：版本号发现的通用通道。
+# 三家代理（gh-proxy.com / ghfast.top / ghproxy.net）都能代理 raw 与「带版本号的」
+# 资产下载，但只有前两家能代理 /releases/latest/download 的重定向链（ghproxy.net 会 502），
+# 所以版本发现一律走 raw VERSION，yml/资产一律走 /releases/download/vX.Y.Z/ 带版本号路径。
+$RawBase = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/main"
 $BootstrapTag = 'bootstrap'
 $WindowsFallbackUrl = 'https://ug.link/piercehome/filemgr/share-download/?id=207b7aee11f6446b85fb5f431cb745a6'
 $GitInstallerName = 'Git-2.54.0-64-bit.exe'
@@ -199,32 +204,54 @@ function Convert-GhUrl($Url) {
   return "$script:GhProxy/$Url"
 }
 
-# 从 latest.yml 读取最新 Windows 安装包信息（版本 / 文件名 / sha512），直连+代理通用。
-function Get-LatestYmlInfo {
-  $url = Convert-GhUrl "$ReleasesBase/latest/download/latest.yml"
-  $content = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20).Content
-  # Windows PowerShell 5.1 下，GitHub 以 application/octet-stream 返回 latest.yml，
+# 取回 yml 文本（处理 PowerShell 5.1 把 application/octet-stream 当 byte[] 返回的情况）。
+function Get-YmlText($Url) {
+  $content = (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20).Content
+  # Windows PowerShell 5.1 下，GitHub 以 application/octet-stream 返回 yml，
   # Invoke-WebRequest 的 .Content 会是 byte[]（而非字符串），需手动按 UTF-8 解码，
   # 否则按行 split/正则匹配会全部失败，导致“无法解析”。
   if ($content -is [byte[]]) {
     $content = [System.Text.Encoding]::UTF8.GetString($content)
   }
-  $version = $null
+  return $content
+}
+
+# 解析最新版本号：优先 raw 上的 VERSION 文件（三家代理通用），失败回退 latest.yml 的 version 字段。
+# 返回形如 v0.10.18。
+function Get-LatestVersion {
+  try {
+    $raw = Get-YmlText (Convert-GhUrl "$RawBase/VERSION")
+    $ver = ($raw -split "`n")[0].Trim().TrimEnd("`r")
+    if ($ver -match '^[0-9]+\.[0-9]+\.[0-9]+$') { return "v$ver" }
+  } catch { }
+  # 回退：从 /releases/latest/download/latest.yml 读取 version
+  $content = Get-YmlText (Convert-GhUrl "$ReleasesBase/latest/download/latest.yml")
+  foreach ($line in ($content -split "`n")) {
+    if ($line -match '^version:\s*(.+)$') { return "v$($Matches[1].Trim())" }
+  }
+  throw '无法解析最新版本号。'
+}
+
+# 从指定版本的 latest.yml 读取 Windows 安装包信息（文件名 / sha512），
+# 用带版本号的路径（/releases/download/vX.Y.Z/latest.yml），三家代理通用。
+function Get-LatestYmlInfo {
+  $version = Get-LatestVersion
+  $url = Convert-GhUrl "$ReleasesBase/download/$version/latest.yml"
+  $content = Get-YmlText $url
   $name = $null
   $sha512 = $null
   foreach ($line in ($content -split "`n")) {
     $line = $line.TrimEnd("`r")
-    if ($line -match '^version:\s*(.+)$') { $version = $Matches[1].Trim() }
-    elseif ($line -match '^path:\s*(.+)$') { $name = $Matches[1].Trim() }
+    if ($line -match '^path:\s*(.+)$') { $name = $Matches[1].Trim() }
     elseif (-not $sha512 -and $line -match '^\s*sha512:\s*(.+)$') { $sha512 = $Matches[1].Trim() }
   }
-  if (-not $version -or -not $name) {
+  if (-not $name) {
     throw '无法从 latest.yml 解析最新 Windows 安装包信息。'
   }
   return [PSCustomObject]@{
-    Version = "v$version"
+    Version = $version
     Name = $name
-    Url = "$ReleasesBase/download/v$version/$name"
+    Url = "$ReleasesBase/download/$version/$name"
     Sha512 = $sha512
   }
 }

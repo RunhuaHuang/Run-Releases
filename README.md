@@ -14,7 +14,10 @@
 
 ## 一键安装
 
-请根据你的网络环境选择对应命令：能直连 GitHub 的用户使用「直连」命令，否则使用「代理」命令通过 `gh-proxy.com` 下载。
+请根据你的网络环境选择对应命令：
+
+- **能直连 GitHub**（有 VPN）：用「直连」命令。
+- **不能直连 GitHub**（无 VPN，国内网络）：用任意一组「代理」命令。三家代理速度各异，可逐一尝试取最快的一组；其中 `gh-proxy.com` 通常最快，`ghfast.top` 次之。
 
 ### macOS（Apple Silicon）
 
@@ -24,10 +27,22 @@
 curl -fsSL https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash
 ```
 
-代理：
+代理 gh-proxy.com：
 
 ```bash
 curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://gh-proxy.com bash
+```
+
+代理 ghfast.top：
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://ghfast.top bash
+```
+
+代理 ghproxy.net：
+
+```bash
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://ghproxy.net bash
 ```
 
 ### Windows x64（管理员 PowerShell）
@@ -38,14 +53,26 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Ru
 irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 ```
 
-代理：
+代理 gh-proxy.com：
 
 ```powershell
 $env:RUN_GH_PROXY='https://gh-proxy.com'; irm https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 ```
 
+代理 ghfast.top：
+
+```powershell
+$env:RUN_GH_PROXY='https://ghfast.top'; irm https://ghfast.top/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+```
+
+代理 ghproxy.net：
+
+```powershell
+$env:RUN_GH_PROXY='https://ghproxy.net'; irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+```
+
 > [!NOTE]
-> 所有安装包均经 sha512 完整性校验。`gh-proxy.com` 为第三方公共代理，如偶发不可用，可换用其他可代理 GitHub 发行版下载的镜像（脚本前缀与 `RUN_GH_PROXY` 两处均需替换）。
+> 所有安装包均经 sha512 完整性校验。三家均为第三方公共代理，可用性与速度可能随时间波动；如某一组失败或过慢，请换用另一组。
 
 ---
 
@@ -53,7 +80,7 @@ $env:RUN_GH_PROXY='https://gh-proxy.com'; irm https://gh-proxy.com/https://raw.g
 
 安装脚本会自动完成主程序与运行环境的部署：**安装 Run → 配置 Git → 配置 Node.js → 启动**。所需依赖均从固定的 `bootstrap` 发行版下载并校验，无需手动配置。macOS 将自动解除隔离属性并完成首次启动，Windows 则静默安装至默认路径。
 
-应用内置自动更新，默认通过 GitHub 直连下载新版本。如遇直连缓慢或失败，可在「设置 → 关于」处即时切换下载线路（GitHub 直连 / `gh-proxy.com` 代理）。
+应用内置自动更新，默认通过 GitHub 直连下载新版本。如遇直连缓慢或失败，可在「设置 → 关于」处即时切换下载线路（GitHub 直连 / `gh-proxy.com` / `ghfast.top` / `ghproxy.net` 代理）。
 
 ---
 
