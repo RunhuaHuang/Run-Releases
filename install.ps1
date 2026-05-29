@@ -1,4 +1,8 @@
-# 用法: irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+# 用法（管理员 PowerShell）：
+#   有 VPN（直连）:
+#     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+#   无 VPN（走 ghproxy.net 代理）:
+#     $env:RUN_GH_PROXY='https://ghproxy.net'; irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 # 稳定安装入口配置（仅安装协议变化时才需要更新）
 $ErrorActionPreference = 'Stop'
 
@@ -15,16 +19,12 @@ $NodeInstallerUrl = "$ReleasesBase/download/$BootstrapTag/$NodeInstallerName"
 $NodeInstallerSha256 = 'feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806'
 $AppName = 'Run'
 
-# GitHub 代理前缀（无代理用户回退用）。GitHub 直连不通时，按顺序探测，
-# 取第一个可用的，之后所有 github.com 下载都套上该前缀。
-# 第三方公共代理，仅作兜底，失效时更新此列表即可。
-# 顺序：ghproxy.net 首选（实测最快且直接回内容），gh-proxy.com 兜底。
-$GhProxies = @(
-  'https://ghproxy.net',
-  'https://gh-proxy.com'
-)
-# 运行时确定：空=直连；非空=代理前缀（形如 https://ghfast.top）
-$script:GhProxy = ''
+# GitHub 代理前缀：由用户选择的安装命令决定，脚本内部不再做连通性探测。
+# 实测国内不挂代理有时也能连上 GitHub（能过连通性测试）但速度极慢，探测会被
+# 这种「能连但龟速」骗过，所以改为「用哪条命令走哪条路」：
+#   - 直连命令：不设 $env:RUN_GH_PROXY              → 全程直连 GitHub（适合有 VPN/能直连的用户）
+#   - 代理命令：$env:RUN_GH_PROXY='https://ghproxy.net' → 所有 github.com 下载都套此前缀（适合无 VPN 用户）
+$script:GhProxy = if ($env:RUN_GH_PROXY) { $env:RUN_GH_PROXY } else { '' }
 
 $script:Step = 0
 $script:Total = 6
@@ -177,29 +177,6 @@ function Download-File($Url, $Destination, $Label) {
   }
 }
 
-function Test-GitHubAccess {
-  try {
-    Invoke-WebRequest -Uri "$ReleasesBase/latest" -Method Head -UseBasicParsing -TimeoutSec 20 | Out-Null
-    return $true
-  } catch {
-    return $false
-  }
-}
-
-function Show-GitHubFallback {
-  Write-Host ''
-  Write-Host '  ✗  无法连接 GitHub。' -ForegroundColor Red
-  Write-Host '  请先尝试开启代理/VPN 后重新运行此脚本。' -ForegroundColor Yellow
-  Write-Host ''
-  Write-Dim '  如果当前网络无法访问 GitHub，请改用备用手动安装方式：'
-  Write-Dim "    1. 打开：$WindowsFallbackUrl"
-  Write-Dim '    2. 下载其中三个安装包：Run、Git、Node.js'
-  Write-Dim '    3. 全部安装到默认路径，不要修改安装路径，否则可能无法正常使用'
-  Write-Host ''
-  Pause-IfInteractive '请在记下地址后按 Enter 退出...'
-  exit 1
-}
-
 function Assert-Sha256($Path, $Expected) {
   $actual = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
   if ($actual -ne $Expected.ToLowerInvariant()) {
@@ -220,21 +197,6 @@ function Assert-Sha512Base64($Path, $Expected) {
 function Convert-GhUrl($Url) {
   if ([string]::IsNullOrEmpty($script:GhProxy)) { return $Url }
   return "$script:GhProxy/$Url"
-}
-
-# GitHub 直连失败时调用：按顺序探测代理，找到第一个能拉到 latest.yml 的就用它。
-function Select-GhProxy {
-  $probe = "$ReleasesBase/latest/download/latest.yml"
-  foreach ($proxy in $GhProxies) {
-    try {
-      Invoke-WebRequest -Uri "$proxy/$probe" -Method Head -UseBasicParsing -TimeoutSec 15 | Out-Null
-      $script:GhProxy = $proxy
-      return $true
-    } catch {
-      continue
-    }
-  }
-  return $false
 }
 
 # 从 latest.yml 读取最新 Windows 安装包信息（版本 / 文件名 / sha512），直连+代理通用。
@@ -492,17 +454,13 @@ try {
   }
   Write-Ok '已检测到 Windows x64'
 
-  Write-Step '检测 GitHub 连通性'
-  if (Test-GitHubAccess) {
-    Write-Ok 'GitHub 连通性正常（直连下载）'
+  # 下载通道由用户选择的命令决定（见文件头注释），不再做连通性探测。
+  Write-Step '确认下载通道'
+  if ([string]::IsNullOrEmpty($script:GhProxy)) {
+    Write-Ok '下载通道：GitHub 直连'
   } else {
-    Write-Warn 'GitHub 直连失败，正在尝试国内代理通道...'
-    if (Select-GhProxy) {
-      Write-Ok "已启用代理通道：$script:GhProxy"
-      Write-Warn '代理为第三方公共服务，速度可能较慢，请耐心等待。'
-    } else {
-      Show-GitHubFallback
-    }
+    Write-Ok "下载通道：代理（$script:GhProxy）"
+    Write-Warn '代理为第三方公共服务，速度可能较慢，请耐心等待。'
   }
 
   $tempDir = Join-Path ([IO.Path]::GetTempPath()) ('run-bootstrap-' + [Guid]::NewGuid().ToString('N'))
@@ -569,6 +527,13 @@ try {
   Write-Host ''
   Write-Warn '如果这是下载超时、安装器未弹出、安装器异常退出或终端未继续，请重新运行下面的命令重试：'
   Write-Host '     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex' -ForegroundColor Gray
+  if ([string]::IsNullOrEmpty($script:GhProxy)) {
+    Write-Host ''
+    Write-Warn '若你在国内且没有 VPN，直连 GitHub 很可能超时或极慢，请改用「无 VPN」代理命令：'
+    Write-Host "     `$env:RUN_GH_PROXY='https://ghproxy.net'; irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex" -ForegroundColor Gray
+  }
+  Write-Host ''
+  Write-Dim "  仍不行可用手动备用方式：$WindowsFallbackUrl （下载并安装 Run、Git、Node.js，全部用默认路径）"
   Write-Host ''
   Pause-IfInteractive '按 Enter 退出...'
   exit 1

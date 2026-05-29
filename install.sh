@@ -2,7 +2,10 @@
 # ┌─────────────────────────────────────────────────────────────────┐
 # │  Run — macOS (Apple Silicon) 智能安装脚本                        │
 # │  先安装 Run，再检查并安装 Git / Node.js                          │
-# │  用法: curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash │
+# │  有 VPN（直连）:                                                   │
+# │    curl -fsSL https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash │
+# │  无 VPN（走 ghproxy.net 代理）:                                    │
+# │    curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://ghproxy.net bash │
 # └─────────────────────────────────────────────────────────────────┘
 set -euo pipefail
 
@@ -14,16 +17,12 @@ GITHUB_REPO="Run-Releases"
 GITHUB_RELEASES_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases"
 MAC_FALLBACK_URL="https://ug.link/piercehome/filemgr/share-download/?id=3ad35dc82660496488fb6ca44de1ea34"
 
-# GitHub 代理前缀（无代理用户回退用）。GitHub 直连不通时，按顺序探测，
-# 取第一个可用的，之后所有 github.com 下载都套上该前缀。
-# 这些是第三方公共代理，仅作兜底，可能不定期失效，失效时更新此列表即可。
-# 顺序：ghproxy.net 首选（实测最快且直接回内容），gh-proxy.com 兜底。
-GH_PROXIES=(
-  "https://ghproxy.net"
-  "https://gh-proxy.com"
-)
-# 运行时确定：空=直连 GitHub；非空=代理前缀（形如 https://ghfast.top）
-GH_PROXY=""
+# GitHub 代理前缀：由用户选择的安装命令决定，脚本内部不再做连通性探测。
+# 实测发现国内不挂代理有时也能连上 GitHub（能过连通性测试）但速度极慢，
+# 探测会被这种「能连但龟速」的情况骗过，所以改为「用哪条命令走哪条路」：
+#   - 直连命令：不设 RUN_GH_PROXY        → 全程直连 GitHub（适合有 VPN/能直连的用户）
+#   - 代理命令：RUN_GH_PROXY=https://ghproxy.net → 所有 github.com 下载都套此前缀（适合无 VPN 用户）
+GH_PROXY="${RUN_GH_PROXY:-}"
 NODE_VERSION="24.15.0"
 NODE_PKG_NAME="node-v${NODE_VERSION}.pkg"
 NODE_RELEASE_TAG="bootstrap"
@@ -59,7 +58,12 @@ _fail() {
   echo -e "  ${RED}${BOLD}✗  $1${RESET}"
   if [[ "${2:-}" == "network" ]]; then
     echo ""
-    echo -e "  ${YELLOW}网络提示：请确保网络连接正常后重试${RESET}"
+    if [[ -n "$GH_PROXY" ]]; then
+      echo -e "  ${YELLOW}已在使用代理通道（${GH_PROXY}）仍失败，请检查网络后重试。${RESET}"
+    else
+      echo -e "  ${YELLOW}直连 GitHub 失败。若你在国内且没有 VPN，请改用「无 VPN」的代理安装命令（见 README）。${RESET}"
+    fi
+    echo -e "  ${DIM}仍不行可用手动备用方式：${BLUE}${MAC_FALLBACK_URL}${RESET}"
   fi
   echo ""
   [[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR" 2>/dev/null || true
@@ -97,13 +101,6 @@ _download_with_progress() {
   echo ""
 }
 
-_check_github_access() {
-  curl --fail --location --silent --show-error \
-    --output /dev/null \
-    --max-time 20 \
-    "https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
-}
-
 # 把一个 github.com 下载链接按需套上代理前缀。
 # GH_PROXY 为空时原样返回（直连）。
 _gh() {
@@ -112,37 +109,6 @@ _gh() {
   else
     echo "$1"
   fi
-}
-
-# GitHub 直连失败时调用：按顺序探测代理，找到第一个能拉到 latest-mac.yml 的就用它。
-# 成功设置 GH_PROXY 并返回 0；全部不可用返回 1。
-_select_gh_proxy() {
-  local probe="${GITHUB_RELEASES_BASE}/latest/download/latest-mac.yml"
-  local proxy
-  for proxy in "${GH_PROXIES[@]}"; do
-    if curl --fail --location --silent --show-error \
-        --output /dev/null --max-time 15 \
-        "${proxy}/${probe}"; then
-      GH_PROXY="$proxy"
-      return 0
-    fi
-  done
-  return 1
-}
-
-_show_github_fallback() {
-  echo ""
-  echo -e "  ${YELLOW}${BOLD}无法连接 GitHub。${RESET}"
-  echo -e "  ${YELLOW}请先尝试开启代理/VPN 后重新运行此脚本。${RESET}"
-  echo ""
-  echo -e "  ${DIM}如果没有代理，请改用备用手动安装方式：${RESET}"
-  echo -e "    1. 打开：${BLUE}${MAC_FALLBACK_URL}${RESET}"
-  echo -e "    2. 下载并安装里面的两个安装包：${GRAY}Run${RESET} 和 ${GRAY}Node.js${RESET}"
-  echo -e "    3. 安装完成后，在终端执行：${GRAY}xcode-select --install${RESET}"
-  echo -e "    4. 再执行：${GRAY}xattr -dr com.apple.quarantine /Applications/Run.app${RESET}"
-  echo -e "    5. 最后执行：${GRAY}open /Applications/Run.app${RESET}"
-  echo ""
-  exit 1
 }
 
 # 从稳定的 latest-mac.yml 读取最新版本号（直连/代理通用，不依赖重定向解析）。
@@ -235,22 +201,12 @@ esac
 command -v curl &>/dev/null || _fail "缺少 curl（请先安装 Xcode Command Line Tools）"
 _ok "curl 已就绪"
 
-_spinner_start "正在检测 GitHub 连通性..."
-if _check_github_access; then
-  _spinner_stop
-  _ok "GitHub 连通性正常（直连下载）"
+# 下载通道由用户选择的命令决定（见文件头注释），不再做连通性探测。
+if [[ -n "$GH_PROXY" ]]; then
+  _ok "下载通道：代理（${GH_PROXY}）"
+  _warn "代理为第三方公共服务，速度可能较慢，请耐心等待。"
 else
-  _spinner_stop
-  _warn "GitHub 直连失败，正在尝试国内代理通道..."
-  _spinner_start "正在探测可用代理..."
-  if _select_gh_proxy; then
-    _spinner_stop
-    _ok "已启用代理通道：${GH_PROXY}"
-    _warn "代理为第三方公共服务，速度可能较慢，请耐心等待。"
-  else
-    _spinner_stop
-    _show_github_fallback
-  fi
+  _ok "下载通道：GitHub 直连"
 fi
 
 

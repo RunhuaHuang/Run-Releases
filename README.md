@@ -7,18 +7,34 @@ This repository hosts Run's public release assets and one-line installer entrypo
 
 ## 安装命令
 
-国内外用户统一用下面这条命令即可。脚本本身通过 `ghproxy.net` 拉取（仅 ~20KB），运行后会**自动检测 GitHub 连通性**：能直连 GitHub 就走 GitHub 满速下载安装包，连不上才把下载切到 `ghproxy.net` 代理通道。因此有代理 / 海外用户也不会损失下载速度。
+根据你的网络环境，**直接选对应的那条命令**——脚本不再自动探测 GitHub 连通性（实测国内不挂代理有时也能连上但速度极慢，会骗过探测），你用哪条命令就走哪条下载通道。
 
-macOS (Apple Silicon)：
+### macOS (Apple Silicon)
+
+有 VPN / 能直连 GitHub（满速直连）：
 
 ```bash
-curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash
 ```
 
-Windows x64（管理员 PowerShell）：
+无 VPN（走 `ghproxy.net` 代理）：
+
+```bash
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://ghproxy.net bash
+```
+
+### Windows x64（管理员 PowerShell）
+
+有 VPN / 能直连 GitHub（满速直连）：
 
 ```powershell
-irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 ```
 
-> 安装包均带 sha512 完整性校验。`ghproxy.net` 为第三方公共代理，若偶发不可用，可把命令里的前缀临时换成 `https://gh-proxy.com`，或在能访问 GitHub 时直接去掉 `https://ghproxy.net/` 前缀走原始 GitHub 地址。
+无 VPN（走 `ghproxy.net` 代理）：
+
+```powershell
+$env:RUN_GH_PROXY='https://ghproxy.net'; irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+```
+
+> 安装包均带 sha512 完整性校验。`ghproxy.net` 为第三方公共代理，若偶发不可用，可把命令里的 `ghproxy.net`（两处都要换：脚本前缀和 `RUN_GH_PROXY`）临时改成 `gh-proxy.com`。
