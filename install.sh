@@ -4,8 +4,8 @@
 # │  先安装 Run，再检查并安装 Git / Node.js                          │
 # │  有 VPN（直连）:                                                   │
 # │    curl -fsSL https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | bash │
-# │  无 VPN（走 ghproxy.net 代理）:                                    │
-# │    curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://ghproxy.net bash │
+# │  无 VPN（走 gh-proxy.com 代理）:                                    │
+# │    curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://gh-proxy.com bash │
 # └─────────────────────────────────────────────────────────────────┘
 set -euo pipefail
 
@@ -21,7 +21,7 @@ MAC_FALLBACK_URL="https://ug.link/piercehome/filemgr/share-download/?id=3ad35dc8
 # 实测发现国内不挂代理有时也能连上 GitHub（能过连通性测试）但速度极慢，
 # 探测会被这种「能连但龟速」的情况骗过，所以改为「用哪条命令走哪条路」：
 #   - 直连命令：不设 RUN_GH_PROXY        → 全程直连 GitHub（适合有 VPN/能直连的用户）
-#   - 代理命令：RUN_GH_PROXY=https://ghproxy.net → 所有 github.com 下载都套此前缀（适合无 VPN 用户）
+#   - 代理命令：RUN_GH_PROXY=https://gh-proxy.com → 所有 github.com 下载都套此前缀（适合无 VPN 用户）
 GH_PROXY="${RUN_GH_PROXY:-}"
 NODE_VERSION="24.15.0"
 NODE_PKG_NAME="node-v${NODE_VERSION}.pkg"

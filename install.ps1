@@ -1,8 +1,8 @@
 # 用法（管理员 PowerShell）：
 #   有 VPN（直连）:
 #     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
-#   无 VPN（走 ghproxy.net 代理）:
-#     $env:RUN_GH_PROXY='https://ghproxy.net'; irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
+#   无 VPN（走 gh-proxy.com 代理）:
+#     $env:RUN_GH_PROXY='https://gh-proxy.com'; irm https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 # 稳定安装入口配置（仅安装协议变化时才需要更新）
 $ErrorActionPreference = 'Stop'
 
@@ -23,7 +23,7 @@ $AppName = 'Run'
 # 实测国内不挂代理有时也能连上 GitHub（能过连通性测试）但速度极慢，探测会被
 # 这种「能连但龟速」骗过，所以改为「用哪条命令走哪条路」：
 #   - 直连命令：不设 $env:RUN_GH_PROXY              → 全程直连 GitHub（适合有 VPN/能直连的用户）
-#   - 代理命令：$env:RUN_GH_PROXY='https://ghproxy.net' → 所有 github.com 下载都套此前缀（适合无 VPN 用户）
+#   - 代理命令：$env:RUN_GH_PROXY='https://gh-proxy.com' → 所有 github.com 下载都套此前缀（适合无 VPN 用户）
 $script:GhProxy = if ($env:RUN_GH_PROXY) { $env:RUN_GH_PROXY } else { '' }
 
 $script:Step = 0
@@ -530,7 +530,7 @@ try {
   if ([string]::IsNullOrEmpty($script:GhProxy)) {
     Write-Host ''
     Write-Warn '若你在国内且没有 VPN，直连 GitHub 很可能超时或极慢，请改用「无 VPN」代理命令：'
-    Write-Host "     `$env:RUN_GH_PROXY='https://ghproxy.net'; irm https://ghproxy.net/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex" -ForegroundColor Gray
+    Write-Host "     `$env:RUN_GH_PROXY='https://gh-proxy.com'; irm https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex" -ForegroundColor Gray
   }
   Write-Host ''
   Write-Dim "  仍不行可用手动备用方式：$WindowsFallbackUrl （下载并安装 Run、Git、Node.js，全部用默认路径）"
