@@ -248,7 +248,9 @@ _ok "安装包：${ASSET_NAME}"
 # ══════════════════════════════════════════════════════════════════
 _step "下载并安装 Run"
 
-TMP_DIR="${TMP_DIR:-$(mktemp -d)}"
+# 用 run-bootstrap. 前缀，方便 Run 内部"磁盘管理 → 下载/更新缓存"识别和清理；
+# 显式 TMPDIR fallback /tmp 让 BSD（mac）和 GNU（linux）mktemp 都通过模板形式工作。
+TMP_DIR="${TMP_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/run-bootstrap.XXXXXXXX")}"
 DMG_PATH="${TMP_DIR}/${ASSET_NAME}"
 
 echo ""
@@ -271,8 +273,8 @@ else
   _warn "未能取得安装包校验值，跳过完整性校验"
 fi
 
-# 挂载 DMG
-MOUNT_POINT=$(mktemp -d)
+# 挂载 DMG（同样用 run-bootstrap- 前缀，便于 Run 内部清理识别）
+MOUNT_POINT=$(mktemp -d "${TMPDIR:-/tmp}/run-bootstrap-mount.XXXXXXXX")
 _spinner_start "正在挂载安装包..."
 hdiutil attach "$DMG_PATH" \
   -mountpoint "$MOUNT_POINT" \
@@ -343,7 +345,7 @@ else
   echo -e "    ${GRAY}Run 工具链需要 Node.js，脚本现在将自动下载并安装。${RESET}"
   echo ""
 
-  TMP_DIR="${TMP_DIR:-$(mktemp -d)}"
+  TMP_DIR="${TMP_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/run-bootstrap.XXXXXXXX")}"
   NODE_PKG_PATH="${TMP_DIR}/${NODE_PKG_NAME}"
 
   _badge_gh "从固定公开链接下载 Node.js v${NODE_VERSION}..."
