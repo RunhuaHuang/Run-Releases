@@ -28,11 +28,12 @@ MAC_FALLBACK_URL="https://ug.link/piercehome/filemgr/share-download/?id=3ad35dc8
 #   - 直连命令：不设 RUN_GH_PROXY        → 全程直连 GitHub（适合有 VPN/能直连的用户）
 #   - 代理命令：RUN_GH_PROXY=https://gh-proxy.com → 所有 github.com 下载都套此前缀（适合无 VPN 用户）
 GH_PROXY="${RUN_GH_PROXY:-}"
-NODE_VERSION="24.15.0"
+# Node.js 安装包：走清华 TUNA 镜像（镜像 nodejs.org 官方分发，国内直连极速），
+# SHA256 与官方 SHASUMS256.txt 完全一致，不再依赖 nodejs.org 直连、GitHub Releases 与 gh-proxy 代理。
+NODE_VERSION="24.1.0"
 NODE_PKG_NAME="node-v${NODE_VERSION}.pkg"
-NODE_RELEASE_TAG="bootstrap"
-NODE_PKG_URL="${GITHUB_RELEASES_BASE}/download/${NODE_RELEASE_TAG}/${NODE_PKG_NAME}"
-NODE_PKG_SHA256="179cdd07168002ed8395ed63d43dc12e4ac1ab8d375f608eabfb9aff2706ff53"
+NODE_PKG_URL="https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VERSION}/${NODE_PKG_NAME}"
+NODE_PKG_SHA256="623b7a5fd6886dcfff8aa360b268a7f5031ec1a8a363b30173c0033c96948100"
 APP_NAME="Run"
 INSTALL_DIR="/Applications"
 
@@ -93,17 +94,123 @@ _spinner_stop() {
   wait "$SPINNER_PID" 2>/dev/null || true
   SPINNER_PID=""; printf "\r\033[K"
 }
-trap '_spinner_stop; [[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR" 2>/dev/null || true' EXIT
+DL_CURL_PID=""
+DL_HEADER_FILE=""
+_cleanup_resources() {
+  _spinner_stop
+  if [[ -n "${DL_CURL_PID:-}" ]]; then
+    kill "$DL_CURL_PID" 2>/dev/null || true
+    wait "$DL_CURL_PID" 2>/dev/null || true
+    DL_CURL_PID=""
+  fi
+  [[ -n "${DL_HEADER_FILE:-}" ]] && rm -f "$DL_HEADER_FILE" 2>/dev/null || true
+  if [[ "${KEEP_DOWNLOADS:-0}" != "1" && -n "${TMP_DIR:-}" ]]; then
+    rm -rf "$TMP_DIR" 2>/dev/null || true
+  fi
+}
+trap '_cleanup_resources' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
+# 字节数 → 人类可读（B/KB/MB/GB，≥1KB 取小数 1 位）。用 awk 处理浮点，兼容 bash 3.2。
+_fmt_bytes() {
+  awk -v b="$1" 'BEGIN{
+    if (b+0 < 0) {print "0 B"; exit}
+    split("B KB MB GB TB", u, " ")
+    i = 1
+    while (b >= 1024 && i < 5) { b /= 1024; i++ }
+    if (i == 1) printf "%d %s", b, u[i]
+    else        printf "%.1f %s", b, u[i]
+  }'
+}
+
+# 子秒级时间戳（秒，浮点）。perl 的 Time::HiRes 是 macOS 自带 perl 的标准模块，
+# 最稳；date +%s.%N 作为兜底（BSD date 亦支持子秒）。
+_now() {
+  perl -MTime::HiRes=time -e 'printf "%.3f\n", time' 2>/dev/null \
+    || date +%s.%N
+}
+
+# curl 后台下载 + 前台轮询文件大小，算实时速度 / 已下载 / 总量 / 百分比，单行 \r 刷新。
+# 与 Windows 版 Download-File 的展示对齐：percent% (have / total)  speed。
 _download_with_progress() {
   local url="$1" output="$2" label="$3"
   echo ""
   _info "$label"
-  curl --fail --location --progress-bar \
-    --output "$output" \
-    "$url" \
-    || _fail "下载失败，请检查网络" "network"
-  echo ""
+
+  # 用全局变量记录 header 临时文件路径，使顶层 EXIT trap 能在中断时一并回收。
+  DL_HEADER_FILE="$(mktemp -t run-hdr)"
+  local header_file="$DL_HEADER_FILE"
+  # 后台拉取：--dump-header 抓响应头以获取 Content-Length（重定向跟随取最后一个值），
+  # --silent 关闭 curl 自带进度输出。
+  ( curl --fail --location --silent --show-error \
+        --dump-header "$header_file" \
+        --output "$output" \
+        "$url" ) &
+  local curl_pid=$!
+
+  local total=0 have=0 pct=0 speed=0
+  local t0 t_prev prev_have
+  t0=$(_now); t_prev=$t0; prev_have=0
+  DL_CURL_PID="$curl_pid"
+
+  # 轮询落盘文件大小，刷新单行进度。
+  local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' si=0
+  while kill -0 "$curl_pid" 2>/dev/null; do
+    have=$(stat -f%z "$output" 2>/dev/null || echo 0)
+    si=$(( (si + 1) % 10 ))
+    local t_now win
+    t_now=$(_now)
+    win=$(awk -v a="$t_prev" -v b="$t_now" 'BEGIN{printf "%.3f", b-a}')
+
+    # 速度：基于近 0.5s 窗口的增量算瞬时速度，避免长窗口被平均拉低。
+    if awk -v w="$win" 'BEGIN{exit !(w+0 >= 0.5)}'; then
+      local dl=$(( have - prev_have ))
+      [[ $dl -lt 0 ]] && dl=0
+      speed=$(awk -v d="$dl" -v w="$win" 'BEGIN{printf "%.1f", (w+0>0)?d/w:0}')
+      prev_have=$have; t_prev=$t_now
+    fi
+
+    # 响应头可能稍后才写入；下载期间持续尝试解析 Content-Length。
+    if [[ $total -eq 0 ]] && [[ -s "$header_file" ]]; then
+      total=$(awk 'tolower($0) ~ /^content-length:/{
+        v=$0; sub(/^[^:]*:[[:space:]]*/,"",v); sub(/\r/,"",v); print v
+      }' "$header_file" | tail -1 | tr -dc '0-9')
+      total=${total:-0}
+    fi
+
+    local spd="$(_fmt_bytes "$speed")/s"
+    if [[ $total -gt 0 ]]; then
+      pct=$(awk -v h="$have" -v t="$total" 'BEGIN{
+        p = (t+0 > 0) ? (h / t * 100) : 0
+        if (p > 100) p = 100
+        printf "%d", p
+      }')
+      printf "\r    ${CYAN}${spin:$si:1}${RESET}  ${GRAY}%3d%%  %s / %s   ${BOLD}%s${RESET}    " \
+        "$pct" "$(_fmt_bytes "$have")" "$(_fmt_bytes "$total")" "$spd" 2>/dev/null || true
+    else
+      printf "\r    ${CYAN}${spin:$si:1}${RESET}  ${GRAY}已下载 %s   ${BOLD}%s${RESET}    " \
+        "$(_fmt_bytes "$have")" "$spd" 2>/dev/null || true
+    fi
+    sleep 0.1
+  done
+
+  # 下载结束：收尾取最终大小 + 总耗时平均速度。
+  wait "$curl_pid" || { DL_CURL_PID=""; rm -f "$header_file"; DL_HEADER_FILE=""; _fail "下载失败，请检查网络" "network"; }
+  DL_CURL_PID=""
+  have=$(stat -f%z "$output" 2>/dev/null || echo 0)
+  local t_end total_elapsed final_speed
+  t_end=$(_now)
+  total_elapsed=$(awk -v a="$t0" -v b="$t_end" 'BEGIN{d=b-a; if(d<0.001)d=0.001; printf "%.3f", d}')
+  final_speed=$(awk -v h="$have" -v e="$total_elapsed" 'BEGIN{printf "%.1f", h / e}')
+  rm -f "$header_file"; DL_HEADER_FILE=""
+
+  printf "\r\033[K"
+  if [[ $total -gt 0 ]]; then
+    _ok "下载完成（$(_fmt_bytes "$have")，平均 $(_fmt_bytes "$final_speed")/s）"
+  else
+    _ok "下载完成（$(_fmt_bytes "$have")，平均 $(_fmt_bytes "$final_speed")/s）"
+  fi
 }
 
 # 把一个 github.com 下载链接按需套上代理前缀。
@@ -289,17 +396,32 @@ APP_SRC=$(find "$MOUNT_POINT" -maxdepth 1 -name "*.app" | head -1)
   _fail "安装包内未找到应用程序"
 }
 
-if [[ -d "${INSTALL_DIR}/${APP_NAME}.app" ]]; then
-  _spinner_start "移除旧版本..."
-  rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
+APP_DEST="${INSTALL_DIR}/${APP_NAME}.app"
+TMP_APP="${INSTALL_DIR}/${APP_NAME}.app.tmp.$$"
+BACKUP_APP="${INSTALL_DIR}/${APP_NAME}.app.backup.$$"
+rm -rf "$TMP_APP" "$BACKUP_APP" 2>/dev/null || true
+
+_spinner_start "正在复制新版本（约需几秒）..."
+cp -Rf "$APP_SRC" "$TMP_APP" || { _spinner_stop; rm -rf "$TMP_APP" 2>/dev/null || true; _fail "应用复制失败，旧版本未修改"; }
+_spinner_stop
+
+if [[ -d "$APP_DEST" ]]; then
+  _spinner_start "备份旧版本..."
+  mv "$APP_DEST" "$BACKUP_APP" || { _spinner_stop; rm -rf "$TMP_APP" 2>/dev/null || true; _fail "旧版本备份失败，旧版本未修改"; }
   _spinner_stop
-  _ok "旧版本已移除"
 fi
 
-_spinner_start "正在安装（约需几秒）..."
-cp -Rf "$APP_SRC" "${INSTALL_DIR}/"
-_spinner_stop
-_ok "已安装到 ${INSTALL_DIR}/${APP_NAME}.app"
+_spinner_start "正在替换应用..."
+if mv "$TMP_APP" "$APP_DEST"; then
+  rm -rf "$BACKUP_APP" 2>/dev/null || true
+  _spinner_stop
+  _ok "已安装到 ${INSTALL_DIR}/${APP_NAME}.app"
+else
+  [[ -d "$BACKUP_APP" ]] && mv "$BACKUP_APP" "$APP_DEST" 2>/dev/null || true
+  rm -rf "$TMP_APP" 2>/dev/null || true
+  _spinner_stop
+  _fail "应用替换失败，已尽量恢复旧版本"
+fi
 
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
 _ok "安装包已弹出"
@@ -348,8 +470,9 @@ else
   TMP_DIR="${TMP_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/run-bootstrap.XXXXXXXX")}"
   NODE_PKG_PATH="${TMP_DIR}/${NODE_PKG_NAME}"
 
-  _badge_gh "从固定公开链接下载 Node.js v${NODE_VERSION}..."
-  _download_with_progress "$(_gh "$NODE_PKG_URL")" "$NODE_PKG_PATH" "正在下载 ${NODE_PKG_NAME}"
+  # 清华 TUNA 镜像本身就是国内直达，不套 _gh 代理前缀。
+  _badge_r2 "从清华 TUNA 镜像下载 Node.js v${NODE_VERSION}..."
+  _download_with_progress "$NODE_PKG_URL" "$NODE_PKG_PATH" "正在下载 ${NODE_PKG_NAME}"
 
   echo ""
   [[ -s "$NODE_PKG_PATH" ]] || _fail "Node.js 安装包下载不完整"
