@@ -6,6 +6,10 @@
 # 稳定安装入口配置（仅安装协议变化时才需要更新）
 $ErrorActionPreference = 'Stop'
 
+# 强制 TLS 1.2：Windows PowerShell 5.1 默认协议栈偏低，而清华 TUNA 镜像 / GitHub
+# 均要求 TLS 1.2+，不显式设置会导致 HttpWebRequest 握手失败（下载 Git/Node/Run 全挂）。
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 $RepoOwner = 'RunhuaHuang'
 $RepoName = 'Run-Releases'
 $ReleasesBase = "https://github.com/$RepoOwner/$RepoName/releases"
@@ -16,12 +20,16 @@ $ReleasesBase = "https://github.com/$RepoOwner/$RepoName/releases"
 $RawBase = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/main"
 $BootstrapTag = 'bootstrap'
 $WindowsFallbackUrl = 'https://ug.link/piercehome/filemgr/share-download/?id=207b7aee11f6446b85fb5f431cb745a6'
+# Git 安装包：走清华 TUNA 镜像（镜像 Git for Windows 官方 GitHub Releases），
+# 国内直连极速，不再依赖 Run-Releases（GitHub）与 gh-proxy 代理，避免国内下载慢/超时。
 $GitInstallerName = 'Git-2.54.0-64-bit.exe'
-$GitInstallerUrl = "$ReleasesBase/download/$BootstrapTag/$GitInstallerName"
+$GitInstallerUrl = 'https://mirrors.tuna.tsinghua.edu.cn/github-release/git-for-windows/git/Git%20for%20Windows%20v2.54.0.windows.1/Git-2.54.0-64-bit.exe'
 $GitInstallerSha256 = '2b96e7854f0520f0f6b709c21041d9801b1be44d5e1a0d9fa621b2fbc40f1983'
-$NodeInstallerName = 'node-v24.15.0-x64.msi'
-$NodeInstallerUrl = "$ReleasesBase/download/$BootstrapTag/$NodeInstallerName"
-$NodeInstallerSha256 = 'feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806'
+# Node.js 安装包：走清华 TUNA 镜像（镜像 nodejs.org 官方分发），国内直连极速，
+# 不再依赖 nodejs.org 直连与 gh-proxy 代理。版本与 Git 来源保持「国内可直达」原则统一。
+$NodeInstallerName = 'node-v24.1.0-x64.msi'
+$NodeInstallerUrl = 'https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v24.1.0/node-v24.1.0-x64.msi'
+$NodeInstallerSha256 = '082fb5a7fbd4eff935aa39d9d3ba4973e5fe0ceb30f500f0d49a7151b7d3dd28'
 $AppName = 'Run'
 
 # GitHub 代理前缀：由用户选择的安装命令决定，脚本内部不再做连通性探测。
@@ -46,11 +54,10 @@ function Write-Banner {
   Write-Host '    ██╔══██╗██║   ██║██║╚██╗██║' -ForegroundColor Cyan
   Write-Host '    ██║  ██║╚██████╔╝██║ ╚████║' -ForegroundColor Cyan
   Write-Host '    ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝' -ForegroundColor Cyan
-  Write-Host '    智能 AI 桌面助理  ·  Windows 安装向导' -ForegroundColor DarkGray
+  Write-Host '    智能 AI 桌面助理  ·  Windows 全自动安装' -ForegroundColor DarkGray
   Write-Host '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor DarkGray
-  Write-Host '    ⚠  本次安装设计为全自动进行；受限于 Windows 系统与安装器行为差异，' -ForegroundColor Yellow
-  Write-Host '    ⚠  如下载或安装完成后终端未自动继续，请尝试手动按两次 Enter 继续。' -ForegroundColor Yellow
-  Write-Host '    ⚠  Run 安装向导请使用默认路径，不要修改！不要修改！' -ForegroundColor Yellow
+  Write-Host '    本次安装为全自动进行：Run / Git / Node 将静默安装到默认位置。' -ForegroundColor Yellow
+  Write-Host '    全程无需操作，请保持网络畅通，耐心等待完成。' -ForegroundColor Yellow
 }
 
 function Write-Step($Message) {
@@ -104,6 +111,45 @@ function Format-Bytes([long]$Bytes) {
   return ('{0:N2} GB' -f ($Bytes / 1GB))
 }
 
+# ── Spinner（转圈动画）─────────────────────────────────────────
+# 对标 install.sh 的 _spinner_start/_spinner_stop：包裹那些只有「开始/结束」、
+# 中间没有进度百分比的耗时操作（静默安装、SHA 校验、版本查询等），用转圈动画告诉
+# 用户「正在工作，没有卡死」。PowerShell 的 Start-Process -Wait 会阻塞主线程，
+# 所以动画必须跑在独立的 Timer 回调里（Timer 在后台线程池触发，不被主线程阻塞）。
+$script:SpinnerState = $null
+function Start-Spinner($Message) {
+  Stop-Spinner
+  $script:SpinnerState = [PSCustomObject]@{
+    Message = $Message
+    Frames  = [char[]]@([char]0x280B,[char]0x2819,[char]0x2839,[char]0x2838,[char]0x283C,[char]0x2834,[char]0x2826,[char]0x2827,[char]0x2807,[char]0x280F)
+    Index   = 0
+    Timer   = $null
+  }
+  $state = $script:SpinnerState
+  # System.Threading.Timer 在后台线程触发回调，主线程即便被 Start-Process -Wait
+  # 阻塞，回调仍会按周期刷新动画帧，实现「后台转圈」效果。
+  $script:SpinnerState.Timer = New-Object System.Threading.Timer(
+    [System.Threading.TimerCallback]{
+      param($n)
+      try {
+        $f = $state.Frames[$state.Index % $state.Frames.Length]
+        $state.Index++
+        # \r 回到行首覆盖上一帧；避免闪烁，不换行。
+        [Console]::Write("`r    {0}  {1}   " -f $f, $state.Message)
+      } catch {}
+    },
+    $null, 80, 80)
+}
+function Stop-Spinner {
+  if ($script:SpinnerState -and $script:SpinnerState.Timer) {
+    $script:SpinnerState.Timer.Dispose()
+  }
+  $script:SpinnerState = $null
+  # 用空格覆盖整行再回到行首，清除残留的转圈字符。不依赖 ANSI \x1b[K（旧版
+  # Windows conhost / PS 5.1 不识别 ANSI 转义会输出乱码），空格覆盖任何终端都有效。
+  [Console]::Write((' ' * 60) + "`r")
+}
+
 function Test-Admin {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -139,7 +185,6 @@ function Get-CommandVersion($Command, $VersionArgs = '--version') {
 
 function Download-File($Url, $Destination, $Label) {
   Write-Info $Label
-  Write-Warn '下载完成后通常会自动继续；如果终端没有继续，请按两次 Enter。'
 
   $request = [System.Net.HttpWebRequest]::Create($Url)
   $request.AllowAutoRedirect = $true
@@ -260,45 +305,7 @@ function Refresh-Path {
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
-function Wait-InstallerProcess($Process, $Label = '等待安装器完成') {
-  if (-not $Process) { return }
-  while ($true) {
-    try {
-      $Process.Refresh()
-      if ($Process.HasExited) { break }
-    } catch {
-      break
-    }
-    Start-Sleep -Milliseconds 500
-  }
-  Write-Host ''
-}
 
-function Start-RunInstallerWithRetry($InstallerPath) {
-  for ($attempt = 1; $attempt -le 2; $attempt++) {
-    if ($attempt -eq 1) {
-      Write-Info '正在启动 Run 安装向导...'
-    } else {
-      Write-Warn 'Run 安装向导上次未能正常启动，正在自动重试一次...'
-      Start-Sleep -Seconds 2
-    }
-
-    try {
-      $process = Start-Process -FilePath $InstallerPath -PassThru
-      Wait-InstallerProcess $process '等待 Run 安装向导完成'
-
-      if ($process.ExitCode -eq 0) {
-        return $process
-      }
-
-      Write-Warn "Run 安装向导异常退出，退出码：$($process.ExitCode)"
-    } catch {
-      Write-Warn ("Run 安装向导启动失败：{0}" -f $_.Exception.Message)
-    }
-  }
-
-  throw 'Run 安装向导连续两次未能正常完成。请重新运行本安装命令重试。'
-}
 
 function Install-GitIfNeeded($TempDir) {
   $gitVersion = Get-CommandVersion 'git'
@@ -308,12 +315,15 @@ function Install-GitIfNeeded($TempDir) {
   }
 
   $installer = Join-Path $TempDir $GitInstallerName
-  Download-File (Convert-GhUrl $GitInstallerUrl) $installer '正在下载 Git 安装包...'
+  Download-File $GitInstallerUrl $installer '正在下载 Git 安装包...'
+  Start-Spinner '正在校验 Git 安装包完整性...'
   Assert-Sha256 $installer $GitInstallerSha256
+  Stop-Spinner
   Write-Ok 'Git 安装包校验通过'
 
-  Write-Info '正在静默安装 Git...'
+  Start-Spinner '正在静默安装 Git（无需操作，请耐心等待，最长约三分钟）...'
   $process = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/NORESTART' -Wait -PassThru
+  Stop-Spinner
   if ($process.ExitCode -ne 0) {
     throw "Git 安装失败，退出码：$($process.ExitCode)"
   }
@@ -335,12 +345,15 @@ function Install-NodeIfNeeded($TempDir) {
   }
 
   $installer = Join-Path $TempDir $NodeInstallerName
-  Download-File (Convert-GhUrl $NodeInstallerUrl) $installer '正在下载 Node.js 安装包...'
+  Download-File $NodeInstallerUrl $installer '正在下载 Node.js 安装包...'
+  Start-Spinner '正在校验 Node.js 安装包完整性...'
   Assert-Sha256 $installer $NodeInstallerSha256
+  Stop-Spinner
   Write-Ok 'Node.js 安装包校验通过'
 
-  Write-Info '正在静默安装 Node.js...'
+  Start-Spinner '正在静默安装 Node.js（无需操作，请耐心等待，最长约三分钟）...'
   $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installer, '/qn', '/norestart' -Wait -PassThru
+  Stop-Spinner
   if ($process.ExitCode -ne 0) {
     throw "Node.js 安装失败，退出码：$($process.ExitCode)"
   }
@@ -413,8 +426,9 @@ function Find-RunExecutable {
 }
 
 function Install-Run($TempDir) {
-  Write-Info '正在查询最新 Run 版本...'
+  Start-Spinner '正在查询最新 Run 版本...'
   $latest = Get-LatestYmlInfo
+  Stop-Spinner
   if (-not ($latest.Version -match '^v\d+\.\d+\.\d+$')) {
     throw "当前没有可安装的 Run 正式版本（解析到的 release: $($latest.Version)）。请等待 Run-Releases 发布 vX.Y.Z 正式版本后重试。"
   }
@@ -426,26 +440,26 @@ function Install-Run($TempDir) {
 
   # 完整性校验：与 latest.yml 中的 sha512 比对（尤其是走代理时防篡改）
   if ($latest.Sha512) {
+    Start-Spinner '正在校验 Run 安装包完整性...'
     Assert-Sha512Base64 $installerPath $latest.Sha512
+    Stop-Spinner
     Write-Ok '安装包完整性校验通过'
   } else {
     Write-Warn '未能取得安装包校验值，跳过完整性校验'
   }
 
-  Write-Info '准备启动 Run 安装程序...'
+  Start-Spinner '正在静默安装 Run（无需操作，请耐心等待，最长约三分钟）...'
   switch -Regex ($latest.Name) {
     '\.msi$' {
-      Write-Warn '即将打开 Windows Installer 安装界面，请在弹出的向导中完成安装。'
-      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/passive', '/norestart' -PassThru
-      Wait-InstallerProcess $process '等待 Windows Installer 完成'
+      # msi 静默安装：/qn 无界面，装到默认路径
+      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/qn', '/norestart' -Wait -PassThru
     }
     default {
-      Write-Warn '即将打开 Run 安装向导，请按向导完成安装。'
-      Write-Warn '请务必安装到默认路径，不要修改！不要修改！'
-      Write-Warn '关闭安装窗口后通常会自动继续；如果终端没有继续，请按两次 Enter。'
-      $process = Start-RunInstallerWithRetry $installerPath
+      # NSIS 静默安装：/S 无向导界面，装到默认路径（%LOCALAPPDATA%\Programs\Run）
+      $process = Start-Process -FilePath $installerPath -ArgumentList '/S' -Wait -PassThru
     }
   }
+  Stop-Spinner
 
   if ($process.ExitCode -ne 0) {
     throw "Run 安装失败，退出码：$($process.ExitCode)。请重新运行本安装命令重试。"
@@ -453,16 +467,15 @@ function Install-Run($TempDir) {
 
   $runExe = Find-RunExecutable
   if (-not $runExe) {
-    throw '安装程序已退出，但未检测到 Run.exe。请确认是否在安装向导中取消了安装，或安装到了非默认路径。'
+    throw '安装程序已退出，但未检测到 Run.exe。请重新运行本安装命令重试。'
   }
 
+  # 静默安装(/S)默认不自动启动应用；检测是否已有实例在运行（比如用户之前开着）。
   Start-Sleep -Seconds 2
-  $runningAfterInstall = Get-RunProcesses
-  if ($runningAfterInstall.Count -gt 0) {
+  if ((Get-RunProcesses).Count -gt 0) {
     $script:RunAlreadyRunning = $true
-    Write-Ok 'Run 安装完成（安装器已自动启动应用）'
+    Write-Ok 'Run 安装完成（检测到已有实例在运行）'
   } else {
-    $script:RunAlreadyRunning = $false
     Write-Ok 'Run 安装完成'
   }
   Write-Ok "安装位置：$runExe"
@@ -549,10 +562,11 @@ try {
   }
   Write-Host ''
 } catch {
+  Stop-Spinner
   Write-Host ''
   Write-Host ("  ✗  安装失败：{0}" -f $_.Exception.Message) -ForegroundColor Red
   Write-Host ''
-  Write-Warn '如果这是下载超时、安装器未弹出、安装器异常退出或终端未继续，请重新运行下面的命令重试：'
+  Write-Warn '如果这是下载超时或安装失败，请重新运行下面的命令重试：'
   Write-Host '     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex' -ForegroundColor Gray
   if ([string]::IsNullOrEmpty($script:GhProxy)) {
     Write-Host ''
