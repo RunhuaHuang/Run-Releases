@@ -533,6 +533,15 @@ function Get-RunProcesses {
   return @(Get-Process -Name 'Run' -ErrorAction SilentlyContinue)
 }
 
+function Start-RunDetached($RunExe) {
+  if (-not $RunExe) { return }
+  $workDir = Split-Path -Parent $RunExe
+  # Electron/Node 日志在部分 Windows 环境会继承当前 PowerShell 控制台，导致安装
+  # 完成后控制台继续刷 Run 的运行日志。通过 cmd start 脱离当前控制台启动。
+  $args = '/c start "" /D "{0}" "{1}"' -f $workDir, $RunExe
+  Start-Process -FilePath 'cmd.exe' -ArgumentList $args -WindowStyle Hidden | Out-Null
+}
+
 function Restart-RunIfNeeded($RunExe) {
   if (-not $RunExe) { return $false }
   if (-not ($script:InstalledGitThisRun -or $script:InstalledNodeThisRun)) { return $false }
@@ -546,7 +555,7 @@ function Restart-RunIfNeeded($RunExe) {
     Start-Sleep -Seconds 2
   }
 
-  Start-Process -FilePath $RunExe | Out-Null
+  Start-RunDetached $RunExe
   $script:RestartedRunThisRun = $true
   Write-Ok '已重启 Run'
   return $true
@@ -709,7 +718,7 @@ try {
       }
     } elseif ($runExe) {
       Write-Info '正在启动 Run...'
-      Start-Process -FilePath $runExe | Out-Null
+      Start-RunDetached $runExe
       Write-Ok "已启动 $runExe"
     } else {
       Write-Warn '未定位到 Run.exe，请从开始菜单手动启动 Run。'
@@ -726,6 +735,8 @@ try {
     Write-Host '  ✓  依赖已齐全，无需重启 Run，可以正常使用。' -ForegroundColor Green
   }
   Write-Host ''
+  Pause-IfInteractive '按 Enter 关闭 PowerShell...'
+  exit 0
 } catch {
   Stop-Spinner
   Write-Host ''
