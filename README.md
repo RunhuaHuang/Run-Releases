@@ -17,7 +17,7 @@
 请根据你的网络环境选择对应命令：
 
 - **能直连 GitHub**（有 VPN）：用「直连」命令。
-- **不能直连 GitHub**（无 VPN，国内网络）：用任意一组「代理」命令。三家代理速度各异，可逐一尝试取最快的一组；其中 `gh-proxy.com` 通常最快，`ghfast.top` 次之。
+- **不能直连 GitHub**（无 VPN，国内网络）：用任意一组「代理」命令。两家代理速度各异，可逐一尝试取最快的一组；其中 `gh-proxy.com` 通常最快。
 
 ### macOS（Apple Silicon）
 
@@ -31,12 +31,6 @@ curl -fsSL https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/insta
 
 ```bash
 curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://gh-proxy.com bash
-```
-
-代理 ghfast.top：
-
-```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.sh | RUN_GH_PROXY=https://ghfast.top bash
 ```
 
 代理 ghproxy.net：
@@ -59,12 +53,6 @@ irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 
 $env:RUN_GH_PROXY='https://gh-proxy.com'; irm https://gh-proxy.com/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 ```
 
-代理 ghfast.top：
-
-```powershell
-$env:RUN_GH_PROXY='https://ghfast.top'; irm https://ghfast.top/https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
-```
-
 代理 ghproxy.net：
 
 ```powershell
@@ -72,7 +60,7 @@ $env:RUN_GH_PROXY='https://ghproxy.net'; irm https://ghproxy.net/https://raw.git
 ```
 
 > [!NOTE]
-> 所有安装包均经 sha512 完整性校验。三家均为第三方公共代理，可用性与速度可能随时间波动；如某一组失败或过慢，请换用另一组。
+> 所有安装包均经 sha512 完整性校验。两家均为第三方公共代理，可用性与速度可能随时间波动；如某一组失败或过慢，请换用另一组。
 
 ---
 
