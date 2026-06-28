@@ -121,43 +121,19 @@ function Format-Bytes([long]$Bytes) {
   return ('{0:N2} GB' -f ($Bytes / 1GB))
 }
 
-# ── Spinner（转圈动画）─────────────────────────────────────────
-# 对标 install.sh 的 _spinner_start/_spinner_stop：包裹那些只有「开始/结束」、
-# 中间没有进度百分比的耗时操作（静默安装、SHA 校验、版本查询等），用转圈动画告诉
-# 用户「正在工作，没有卡死」。PowerShell 的 Start-Process -Wait 会阻塞主线程，
-# 所以动画必须跑在独立的 Timer 回调里（Timer 在后台线程池触发，不被主线程阻塞）。
-$script:SpinnerState = $null
+# ── Spinner 状态提示 ─────────────────────────────────────────
+# 只输出一次状态，不使用后台 Timer 动画。Windows PowerShell 5.1 在部分环境下
+# 后台线程执行 PowerShell ScriptBlock 会触发 PowerShell 进程崩溃。
 function Start-Spinner($Message) {
-  Stop-Spinner
-  $script:SpinnerState = [PSCustomObject]@{
-    Message = $Message
-    Frames  = [char[]]@([char]0x280B,[char]0x2819,[char]0x2839,[char]0x2838,[char]0x283C,[char]0x2834,[char]0x2826,[char]0x2827,[char]0x2807,[char]0x280F)
-    Index   = 0
-    Timer   = $null
-  }
-  $state = $script:SpinnerState
-  # System.Threading.Timer 在后台线程触发回调，主线程即便被 Start-Process -Wait
-  # 阻塞，回调仍会按周期刷新动画帧，实现「后台转圈」效果。
-  $script:SpinnerState.Timer = New-Object System.Threading.Timer(
-    [System.Threading.TimerCallback]{
-      param($n)
-      try {
-        $f = $state.Frames[$state.Index % $state.Frames.Length]
-        $state.Index++
-        # \r 回到行首覆盖上一帧；避免闪烁，不换行。
-        [Console]::Write("`r    {0}  {1}   " -f $f, $state.Message)
-      } catch {}
-    },
-    $null, 80, 80)
+  # 不再使用 System.Threading.Timer + PowerShell ScriptBlock 做后台动画。
+  # Windows PowerShell 5.1 在部分 Windows 11 环境会因后台线程执行 ScriptBlock
+  # 触发 Management.Automation.ScriptBlock.GetContextFromTLS 崩溃，表现为下载刚开始
+  # PowerShell 窗口直接关闭，脚本 catch 完全来不及执行。这里改成一次性状态提示，
+  # 牺牲转圈动画，优先保证一键安装稳定。
+  Write-Info $Message
 }
 function Stop-Spinner {
-  if ($script:SpinnerState -and $script:SpinnerState.Timer) {
-    $script:SpinnerState.Timer.Dispose()
-  }
-  $script:SpinnerState = $null
-  # 用空格覆盖整行再回到行首，清除残留的转圈字符。不依赖 ANSI \x1b[K（旧版
-  # Windows conhost / PS 5.1 不识别 ANSI 转义会输出乱码），空格覆盖任何终端都有效。
-  [Console]::Write((' ' * 60) + "`r")
+  # Start-Spinner 现在只输出一次状态，停止时无需清理。
 }
 
 function Test-Admin {
@@ -192,8 +168,149 @@ function Get-CommandVersion($Command, $VersionArgs = '--version') {
   }
 }
 
+function Format-Duration([TimeSpan]$Duration) {
+  if ($Duration.TotalHours -ge 1) { return ('{0:00}:{1:00}:{2:00}' -f [int]$Duration.TotalHours, $Duration.Minutes, $Duration.Seconds) }
+  return ('{0:00}:{1:00}' -f $Duration.Minutes, $Duration.Seconds)
+}
+
+function Get-RemoteContentLength($CurlPath, $Url) {
+  try {
+    $headers = & $CurlPath '-sIL' '--connect-timeout' '10' '--max-time' '20' $Url 2>$null
+    $length = 0L
+    foreach ($line in $headers) {
+      if ($line -match '^\s*Content-Length:\s*(\d+)') {
+        $length = [long]$Matches[1]
+      }
+    }
+    if ($length -gt 0) { return $length }
+  } catch { }
+  return 0L
+}
+
+function Download-FileWithCurl($Url, $Destination, $Label) {
+  # Windows 10/11 通常内置 curl.exe。优先使用 curl，并由 PowerShell 自己轮询文件大小，
+  # 输出中文进度；如果连续 60 秒没有任何新增字节，就主动杀掉本次下载并重试。
+  $curl = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+  if (-not $curl) { return $false }
+
+  $maxAttempts = 5
+  $stallTimeoutSeconds = 60
+  $lastExitCode = $null
+  $lastFailure = $null
+  $expectedBytes = Get-RemoteContentLength $curl.Source $Url
+
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    if ($attempt -gt 1) {
+      $backoff = $attempt * 5
+      Write-Warn "下载无进展或失败，第 $attempt/$maxAttempts 次重试（${backoff}s 后开始）..."
+      Start-Sleep -Seconds $backoff
+    }
+    Remove-Item -Force $Destination -ErrorAction SilentlyContinue
+
+    $args = @(
+      '-L',
+      '--fail',
+      '--connect-timeout', '30',
+      '--max-time', '1800',
+      '--retry', '0',
+      '--silent',
+      '--show-error',
+      '-o', $Destination,
+      $Url
+    )
+
+    $stderrPath = "$Destination.curl.err"
+    Remove-Item -Force $stderrPath -ErrorAction SilentlyContinue
+    $process = Start-Process -FilePath $curl.Source -ArgumentList $args -RedirectStandardError $stderrPath -NoNewWindow -PassThru
+
+    $startTime = Get-Date
+    $lastProgressTime = $startTime
+    $lastSampleTime = $startTime
+    $lastSampleBytes = 0L
+    $timedOut = $false
+
+    while (-not $process.HasExited) {
+      Start-Sleep -Seconds 1
+      $now = Get-Date
+      $bytes = 0L
+      if (Test-Path -LiteralPath $Destination) {
+        $bytes = (Get-Item -LiteralPath $Destination).Length
+      }
+
+      if ($bytes -gt $lastSampleBytes) {
+        $lastProgressTime = $now
+      }
+
+      $sampleSeconds = [Math]::Max(0.001, ($now - $lastSampleTime).TotalSeconds)
+      $currentSpeed = [long][Math]::Max(0, (($bytes - $lastSampleBytes) / $sampleSeconds))
+      $elapsed = $now - $startTime
+      $avgSpeed = if ($elapsed.TotalSeconds -gt 0) { [long]($bytes / $elapsed.TotalSeconds) } else { 0L }
+
+      if ($expectedBytes -gt 0) {
+        $percent = [Math]::Min(100, [Math]::Floor(($bytes * 100) / $expectedBytes))
+        $remaining = if ($avgSpeed -gt 0 -and $expectedBytes -gt $bytes) { Format-Duration ([TimeSpan]::FromSeconds(($expectedBytes - $bytes) / $avgSpeed)) } else { '--:--' }
+        $line = "`r    下载中：{0}%（{1}/{2}），当前速度 {3}/s，平均速度 {4}/s，已用时 {5}，预计剩余 {6}    " -f $percent, (Format-Bytes $bytes), (Format-Bytes $expectedBytes), (Format-Bytes $currentSpeed), (Format-Bytes $avgSpeed), (Format-Duration $elapsed), $remaining
+        [Console]::Write($line)
+      } else {
+        $line = "`r    下载中：已下载 {0}，当前速度 {1}/s，平均速度 {2}/s，已用时 {3}    " -f (Format-Bytes $bytes), (Format-Bytes $currentSpeed), (Format-Bytes $avgSpeed), (Format-Duration $elapsed)
+        [Console]::Write($line)
+      }
+
+      if (($now - $lastProgressTime).TotalSeconds -ge $stallTimeoutSeconds) {
+        $timedOut = $true
+        try { $process.Kill() } catch {}
+        break
+      }
+
+      $lastSampleBytes = $bytes
+      $lastSampleTime = $now
+    }
+
+    try { $process.WaitForExit() } catch {}
+    [Console]::WriteLine('')
+
+    $lastExitCode = $process.ExitCode
+    $size = 0L
+    if (Test-Path -LiteralPath $Destination) {
+      $size = (Get-Item -LiteralPath $Destination).Length
+    }
+
+    if ($timedOut) {
+      $lastFailure = "连续 $stallTimeoutSeconds 秒没有下载到新数据"
+      Write-Warn $lastFailure
+      continue
+    }
+
+    if ($expectedBytes -gt 0 -and $size -ge $expectedBytes) {
+      if ($lastExitCode -ne 0) {
+        Write-Warn "curl 退出码为 $lastExitCode，但文件大小已达到预期；继续进入完整性校验。"
+      }
+      Write-Ok ("下载完成（{0}）" -f (Format-Bytes $size))
+      return $true
+    }
+
+    if ($lastExitCode -eq 0 -and $size -gt 0 -and $expectedBytes -le 0) {
+      Write-Ok ("下载完成（{0}）" -f (Format-Bytes $size))
+      return $true
+    }
+
+    $curlError = ''
+    if (Test-Path -LiteralPath $stderrPath) {
+      $curlError = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+    $lastFailure = if ($curlError) { "curl 退出码 $lastExitCode：$curlError" } else { "curl 退出码 $lastExitCode，已下载 $(Format-Bytes $size)" }
+    Write-Warn $lastFailure
+  }
+
+  throw "下载失败（已重试 $maxAttempts 次）：$lastFailure。请更换网络/VPN或稍后重试。"
+}
+
 function Download-File($Url, $Destination, $Label) {
   Write-Info $Label
+
+  if (Download-FileWithCurl $Url $Destination $Label) {
+    return
+  }
 
   # 下载重试：国内访问 GitHub / 清华镜像偶发连接重置或超时，单次失败直接进外层
   # catch 会触发 exit 关窗（见文件末尾注释），所以这里先内联重试 3 次，每次重试
@@ -213,10 +330,10 @@ function Download-File($Url, $Destination, $Label) {
       $request.AllowAutoRedirect = $true
       $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
       $request.UserAgent = 'RunInstaller/1.0'
-      # 显式超时：建立连接 30s、整体请求 600s。不设置时 HttpWebRequest 默认 100s，
-      # 但断连的 socket 可能长时间不抛错导致 stream.Read 长期卡死，显式超时避免卡死。
+      # fallback 路径：没有 curl.exe 时使用 HttpWebRequest。读写超时保持较短，
+      # 避免断流后长时间卡住。
       $request.Timeout = 30000
-      $request.ReadWriteTimeout = 600000
+      $request.ReadWriteTimeout = 60000
 
       $response = $null
       $stream = $null
