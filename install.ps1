@@ -1,4 +1,4 @@
-﻿# 用法（管理员 PowerShell）：
+# 用法（管理员 PowerShell）：
 #   有 VPN（直连）:
 #     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 #   无 VPN（走 gh-proxy.com 代理）:
@@ -267,6 +267,7 @@ function Download-FileWithCurl($Url, $Destination, $Label) {
     }
 
     try { $process.WaitForExit() } catch {}
+    try { $process.Refresh() } catch {}
     [Console]::WriteLine('')
 
     $lastExitCode = $process.ExitCode
@@ -282,7 +283,7 @@ function Download-FileWithCurl($Url, $Destination, $Label) {
     }
 
     if ($expectedBytes -gt 0 -and $size -ge $expectedBytes) {
-      if ($lastExitCode -ne 0) {
+      if ($null -ne $lastExitCode -and $lastExitCode -ne 0) {
         Write-Warn "curl 退出码为 $lastExitCode，但文件大小已达到预期；继续进入完整性校验。"
       }
       Write-Ok ("下载完成（{0}）" -f (Format-Bytes $size))
