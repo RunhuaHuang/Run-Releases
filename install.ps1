@@ -1,4 +1,4 @@
-# 用法（管理员 PowerShell）：
+﻿# 用法（管理员 PowerShell）：
 #   有 VPN（直连）:
 #     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 #   无 VPN（走 gh-proxy.com 代理）:
@@ -58,6 +58,7 @@ function Write-Banner {
   Write-Host '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor DarkGray
   Write-Host '    本次安装为全自动进行：Run / Git / Node 将静默安装到默认位置。' -ForegroundColor Yellow
   Write-Host '    全程无需操作，请保持网络畅通，耐心等待完成。' -ForegroundColor Yellow
+  Write-Host '    （提示：若某一步长时间未自动继续，可按两次 Enter 推进。）' -ForegroundColor DarkGray
 }
 
 function Write-Step($Message) {
@@ -467,7 +468,27 @@ function Refresh-Path {
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
-
+# 启动静默安装器并等待完成，替代裸 Start-Process -Wait。
+# 背景：Windows 上 Git（Inno Setup /VERYSILENT）/ Node（MSI /qn）/ Run（NSIS /S）
+# 静默安装结束后，有时控制台输入缓冲会残留一个换行，导致 PowerShell 的下一个控制台
+# 操作（输出/Read）卡住，直到用户手动按 Enter 才释放——表现为「安装完不继续推进」。
+# 本函数做三件事确保自动推进：WaitForExit 等主进程退出 + 消费控制台残留输入 + 返回退出码。
+function Wait-InstallerAndAutoAdvance($Process) {
+  if (-not $Process) { return 0 }
+  try {
+    if (-not $Process.HasExited) { $Process.WaitForExit() }
+  } catch { }
+  # 刷新/消费控制台残留输入：静默安装器（尤其 Git Inno Setup、NSIS）退出后，偶尔会在
+  # 父控制台输入缓冲留下一个换行/回车。不消费掉它，PowerShell 后续的 Read-Host 或
+  # 控制台输出会被它阻塞，表现就是「卡住、按两次 Enter 才继续」。这里在非交互宿主
+  # 下静默跳过（KeyAvailable 会抛异常），交互控制台下尽量排空缓冲。
+  try {
+    while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
+  } catch { }
+  # 兜底：再敲一个换行刷新输出缓冲，确保后续 Write-Host 立即显示。
+  try { [Console]::Out.Flush() } catch { }
+  try { return $Process.ExitCode } catch { return 0 }
+}
 
 function Install-GitIfNeeded($TempDir) {
   $gitVersion = Get-CommandVersion 'git'
@@ -483,11 +504,12 @@ function Install-GitIfNeeded($TempDir) {
   Stop-Spinner
   Write-Ok 'Git 安装包校验通过'
 
-  Start-Spinner '正在静默安装 Git（无需操作，请耐心等待，最长约三分钟）...'
-  $process = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/NORESTART' -Wait -PassThru
+  Start-Spinner '正在静默安装 Git（无需操作，请耐心等待，最长约三分钟；若长时间不动，按两次 Enter 推进）...'
+  $process = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/NORESTART' -PassThru
+  $exitCode = Wait-InstallerAndAutoAdvance $process
   Stop-Spinner
-  if ($process.ExitCode -ne 0) {
-    throw "Git 安装失败，退出码：$($process.ExitCode)"
+  if ($exitCode -ne 0) {
+    throw "Git 安装失败，退出码：$exitCode"
   }
 
   Refresh-Path
@@ -513,11 +535,12 @@ function Install-NodeIfNeeded($TempDir) {
   Stop-Spinner
   Write-Ok 'Node.js 安装包校验通过'
 
-  Start-Spinner '正在静默安装 Node.js（无需操作，请耐心等待，最长约三分钟）...'
-  $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installer, '/qn', '/norestart' -Wait -PassThru
+  Start-Spinner '正在静默安装 Node.js（无需操作，请耐心等待，最长约三分钟；若长时间不动，按两次 Enter 推进）...'
+  $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installer, '/qn', '/norestart' -PassThru
+  $exitCode = Wait-InstallerAndAutoAdvance $process
   Stop-Spinner
-  if ($process.ExitCode -ne 0) {
-    throw "Node.js 安装失败，退出码：$($process.ExitCode)"
+  if ($exitCode -ne 0) {
+    throw "Node.js 安装失败，退出码：$exitCode"
   }
 
   Refresh-Path
@@ -619,21 +642,24 @@ function Install-Run($TempDir) {
     Write-Warn '未能取得安装包校验值，跳过完整性校验'
   }
 
-  Start-Spinner '正在静默安装 Run（无需操作，请耐心等待，最长约三分钟）...'
+  Start-Spinner '正在静默安装 Run（无需操作，请耐心等待，最长约三分钟；若长时间不动，按两次 Enter 推进）...'
+  $runExitCode = 0
   switch -Regex ($latest.Name) {
     '\.msi$' {
       # msi 静默安装：/qn 无界面，装到默认路径
-      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/qn', '/norestart' -Wait -PassThru
+      $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', $installerPath, '/qn', '/norestart' -PassThru
+      $runExitCode = Wait-InstallerAndAutoAdvance $process
     }
     default {
       # NSIS 静默安装：/S 无向导界面，装到默认路径（%LOCALAPPDATA%\Programs\Run）
-      $process = Start-Process -FilePath $installerPath -ArgumentList '/S' -Wait -PassThru
+      $process = Start-Process -FilePath $installerPath -ArgumentList '/S' -PassThru
+      $runExitCode = Wait-InstallerAndAutoAdvance $process
     }
   }
   Stop-Spinner
 
-  if ($process.ExitCode -ne 0) {
-    throw "Run 安装失败，退出码：$($process.ExitCode)。请重新运行本安装命令重试。"
+  if ($runExitCode -ne 0) {
+    throw "Run 安装失败，退出码：$runExitCode。请重新运行本安装命令重试。"
   }
 
   $runExe = Find-RunExecutable
