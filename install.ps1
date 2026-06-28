@@ -92,6 +92,16 @@ function Pause-IfInteractive($Prompt = '按 Enter 结束...') {
   }
 }
 
+# 错误路径专用阻塞：无论何种宿主都先尝试 Read-Host 等待用户确认；stdin 被重定向
+# （非交互式）读不到时退化为短时挂起，保证错误信息不会被一闪而过的关闭动作吞掉。
+function Wait-Visible($Prompt = '按 Enter 关闭...') {
+  try {
+    Read-Host $Prompt | Out-Null
+  } catch {
+    Start-Sleep -Seconds 5
+  }
+}
+
 function Prompt-KeepDownloads {
   Write-Host ''
   Write-Dim '    直接按 Enter：自动删除本次下载的安装包（推荐）'
@@ -168,8 +178,7 @@ function Show-AdminGuidance {
   Write-Host ''
   Write-Host '       irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex' -ForegroundColor Gray
   Write-Host ''
-  Pause-IfInteractive '请在记下命令后按 Enter 退出...'
-  exit 1
+  Pause-IfInteractive '请在记下命令后按 Enter 继续...'
 }
 
 function Get-CommandVersion($Command, $VersionArgs = '--version') {
@@ -186,45 +195,80 @@ function Get-CommandVersion($Command, $VersionArgs = '--version') {
 function Download-File($Url, $Destination, $Label) {
   Write-Info $Label
 
-  $request = [System.Net.HttpWebRequest]::Create($Url)
-  $request.AllowAutoRedirect = $true
-  $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
-  $request.UserAgent = 'RunInstaller/1.0'
-
-  $response = $null
-  $stream = $null
-  $fileStream = $null
-  try {
-    $response = $request.GetResponse()
-    $stream = $response.GetResponseStream()
-    $fileStream = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-
-    $buffer = New-Object byte[] 1048576
-    $totalRead = 0L
-    $contentLength = [long]$response.ContentLength
-    $lastPercent = -1
-
-    while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-      $fileStream.Write($buffer, 0, $read)
-      $totalRead += $read
-      if ($contentLength -gt 0) {
-        $percent = [int][Math]::Min(100, [Math]::Floor(($totalRead * 100) / $contentLength))
-        if ($percent -ne $lastPercent) {
-          Write-Progress -Activity $Label -Status (("{0}% ({1}/{2})" -f $percent, (Format-Bytes $totalRead), (Format-Bytes $contentLength))) -PercentComplete $percent
-          $lastPercent = $percent
-        }
-      } else {
-        Write-Progress -Activity $Label -Status ("已下载 {0}" -f (Format-Bytes $totalRead)) -PercentComplete 0
-      }
+  # 下载重试：国内访问 GitHub / 清华镜像偶发连接重置或超时，单次失败直接进外层
+  # catch 会触发 exit 关窗（见文件末尾注释），所以这里先内联重试 3 次，每次重试
+  # 前清掉半截文件。重试全失败才抛出，让外层 catch 显示明确错误。
+  $maxAttempts = 3
+  $lastError = $null
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    if ($attempt -gt 1) {
+      $backoff = $attempt * 3
+      Write-Warn "下载失败，第 $attempt/$maxAttempts 次重试（${backoff}s 后开始）..."
+      Start-Sleep -Seconds $backoff
+      Remove-Item -Force $Destination -ErrorAction SilentlyContinue
     }
 
-    Write-Progress -Activity $Label -Completed
-    Write-Ok ("下载完成（{0}）" -f (Format-Bytes $totalRead))
-  } finally {
-    if ($fileStream) { $fileStream.Dispose() }
-    if ($stream) { $stream.Dispose() }
-    if ($response) { $response.Dispose() }
+    try {
+      $request = [System.Net.HttpWebRequest]::Create($Url)
+      $request.AllowAutoRedirect = $true
+      $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+      $request.UserAgent = 'RunInstaller/1.0'
+      # 显式超时：建立连接 30s、整体请求 600s。不设置时 HttpWebRequest 默认 100s，
+      # 但断连的 socket 可能长时间不抛错导致 stream.Read 长期卡死，显式超时避免卡死。
+      $request.Timeout = 30000
+      $request.ReadWriteTimeout = 600000
+
+      $response = $null
+      $stream = $null
+      $fileStream = $null
+      try {
+        $response = $request.GetResponse()
+        $stream = $response.GetResponseStream()
+        $fileStream = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+
+        $buffer = New-Object byte[] 1048576
+        $totalRead = 0L
+        $contentLength = [long]$response.ContentLength
+        $lastPercent = -1
+
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+          $fileStream.Write($buffer, 0, $read)
+          $totalRead += $read
+          if ($contentLength -gt 0) {
+            $percent = [int][Math]::Min(100, [Math]::Floor(($totalRead * 100) / $contentLength))
+            if ($percent -ne $lastPercent) {
+              Write-Progress -Activity $Label -Status (("{0}% ({1}/{2})" -f $percent, (Format-Bytes $totalRead), (Format-Bytes $contentLength))) -PercentComplete $percent
+              $lastPercent = $percent
+            }
+          } else {
+            Write-Progress -Activity $Label -Status ("已下载 {0}" -f (Format-Bytes $totalRead)) -PercentComplete 0
+          }
+        }
+
+        # 校验：ContentLength 已知时，实际下载数必须与之相符，否则视为不完整（连接
+        # 提前断开但 Read 未抛错的边缘情况），避免把残缺文件当成功。
+        if ($contentLength -gt 0 -and $totalRead -ne $contentLength) {
+          throw "下载不完整：期望 $contentLength 字节，实际 $totalRead 字节"
+        }
+
+        Write-Progress -Activity $Label -Completed
+        Write-Ok ("下载完成（{0}）" -f (Format-Bytes $totalRead))
+        return
+      } finally {
+        # 资源释放逐个 try/catch 保护：finally 里抛出的异常会掩盖 try 里的原始异常，
+        # 导致 $lastError 记录的是"对象已释放"之类的清理错误而非真正的下载失败原因，
+        # 用户看到的报错毫无意义。这里吞掉释放异常，保留外层 catch 捕获的原始错误。
+        foreach ($d in @($fileStream, $stream, $response)) {
+          if ($d) { try { $d.Dispose() } catch {} }
+        }
+      }
+    } catch {
+      $lastError = $_
+      # 进度条残留清理，避免下一次重试时叠画。
+      Write-Progress -Activity $Label -Completed
+    }
   }
+  throw "下载失败（已重试 $maxAttempts 次）：$($lastError.Exception.Message)"
 }
 
 function Assert-Sha256($Path, $Expected) {
@@ -486,6 +530,9 @@ try {
 
   if (-not (Test-Admin)) {
     Show-AdminGuidance
+    # 非管理员：Show-AdminGuidance 已显示引导并等待用户确认，脚本级 return 终止
+    # 主流程（只结束本次 iex 执行，不关窗口）。
+    return
   }
 
   Write-Step '检测系统环境'
@@ -576,6 +623,8 @@ try {
   Write-Host ''
   Write-Dim "  仍不行可用手动备用方式：$WindowsFallbackUrl （下载并安装 Run、Git、Node.js，全部用默认路径）"
   Write-Host ''
-  Pause-IfInteractive '按 Enter 退出...'
-  exit 1
+  # return 而非 exit：避免 `irm | iex` 模式下 exit 关闭整个终端窗口，
+  # 用户看不到上面的错误信息。Wait-Visible 无条件等待用户确认后再回到提示符。
+  Wait-Visible '按 Enter 回到 PowerShell 提示符...'
+  return
 }
