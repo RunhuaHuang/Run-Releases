@@ -138,40 +138,103 @@ _download_with_progress() {
   echo ""
   _info "$label"
 
-  # 用全局变量记录 header 临时文件路径，使顶层 EXIT trap 能在中断时一并回收。
-  DL_HEADER_FILE="$(mktemp -t run-hdr)"
-  local header_file="$DL_HEADER_FILE"
-  # 后台拉取：--dump-header 抓响应头以获取 Content-Length（重定向跟随取最后一个值），
-  # --silent 关闭 curl 自带进度输出。
-  ( curl --fail --location --silent --show-error \
-        --dump-header "$header_file" \
-        --output "$output" \
-        "$url" ) &
-  local curl_pid=$!
+  local max_attempts=5
+  local stall_timeout=60
+  local attempt last_failure=""
 
-  local total=0 have=0 pct=0 speed=0
-  local t0 t_prev prev_have
-  t0=$(_now); t_prev=$t0; prev_have=0
-  DL_CURL_PID="$curl_pid"
-
-  # 轮询落盘文件大小，刷新单行进度。
-  local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' si=0
-  while kill -0 "$curl_pid" 2>/dev/null; do
-    have=$(stat -f%z "$output" 2>/dev/null || echo 0)
-    si=$(( (si + 1) % 10 ))
-    local t_now win
-    t_now=$(_now)
-    win=$(awk -v a="$t_prev" -v b="$t_now" 'BEGIN{printf "%.3f", b-a}')
-
-    # 速度：基于近 0.5s 窗口的增量算瞬时速度，避免长窗口被平均拉低。
-    if awk -v w="$win" 'BEGIN{exit !(w+0 >= 0.5)}'; then
-      local dl=$(( have - prev_have ))
-      [[ $dl -lt 0 ]] && dl=0
-      speed=$(awk -v d="$dl" -v w="$win" 'BEGIN{printf "%.1f", (w+0>0)?d/w:0}')
-      prev_have=$have; t_prev=$t_now
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
+    if [[ "$attempt" -gt 1 ]]; then
+      local backoff=$(( attempt * 5 ))
+      _warn "下载无进展或失败，第 ${attempt}/${max_attempts} 次重试（${backoff}s 后开始）..."
+      sleep "$backoff"
     fi
 
-    # 响应头可能稍后才写入；下载期间持续尝试解析 Content-Length。
+    rm -f "$output" 2>/dev/null || true
+
+    # 用全局变量记录 header 临时文件路径，使顶层 EXIT trap 能在中断时一并回收。
+    DL_HEADER_FILE="$(mktemp -t run-hdr)"
+    local header_file="$DL_HEADER_FILE"
+
+    # 后台拉取：--dump-header 抓响应头以获取 Content-Length（重定向跟随取最后一个值），
+    # --silent 关闭 curl 自带进度输出；卡死检测由前台轮询落盘文件大小完成。
+    ( curl --fail --location --silent --show-error \
+          --connect-timeout 30 \
+          --max-time 1800 \
+          --retry 0 \
+          --dump-header "$header_file" \
+          --output "$output" \
+          "$url" ) &
+    local curl_pid=$!
+
+    local total=0 have=0 pct=0 speed=0
+    local t0 t_prev prev_have last_progress_at
+    t0=$(_now); t_prev=$t0; prev_have=0; last_progress_at=$t0
+    local timed_out=0
+    DL_CURL_PID="$curl_pid"
+
+    # 轮询落盘文件大小，刷新单行进度；如果连续 stall_timeout 秒没有任何新增字节，
+    # 主动杀掉本次 curl 并进入下一轮重试，避免网络半断时一直卡住。
+    local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' si=0
+    while kill -0 "$curl_pid" 2>/dev/null; do
+      have=$(stat -f%z "$output" 2>/dev/null || echo 0)
+      si=$(( (si + 1) % 10 ))
+      local t_now win
+      t_now=$(_now)
+      win=$(awk -v a="$t_prev" -v b="$t_now" 'BEGIN{printf "%.3f", b-a}')
+
+      if [[ "$have" -gt "$prev_have" ]]; then
+        last_progress_at="$t_now"
+      fi
+
+      # 速度：基于近 0.5s 窗口的增量算瞬时速度，避免长窗口被平均拉低。
+      if awk -v w="$win" 'BEGIN{exit !(w+0 >= 0.5)}'; then
+        local dl=$(( have - prev_have ))
+        [[ $dl -lt 0 ]] && dl=0
+        speed=$(awk -v d="$dl" -v w="$win" 'BEGIN{printf "%.1f", (w+0>0)?d/w:0}')
+        prev_have=$have; t_prev=$t_now
+      fi
+
+      # 响应头可能稍后才写入；下载期间持续尝试解析 Content-Length。
+      if [[ $total -eq 0 ]] && [[ -s "$header_file" ]]; then
+        total=$(awk 'tolower($0) ~ /^content-length:/{
+          v=$0; sub(/^[^:]*:[[:space:]]*/,"",v); sub(/\r/,"",v); print v
+        }' "$header_file" | tail -1 | tr -dc '0-9')
+        total=${total:-0}
+      fi
+
+      local spd="$(_fmt_bytes "$speed")/s"
+      if [[ $total -gt 0 ]]; then
+        pct=$(awk -v h="$have" -v t="$total" 'BEGIN{
+          p = (t+0 > 0) ? (h / t * 100) : 0
+          if (p > 100) p = 100
+          printf "%d", p
+        }')
+        printf "\r    ${CYAN}${spin:$si:1}${RESET}  ${GRAY}%3d%%  %s / %s   ${BOLD}%s${RESET}    " \
+          "$pct" "$(_fmt_bytes "$have")" "$(_fmt_bytes "$total")" "$spd" 2>/dev/null || true
+      else
+        printf "\r    ${CYAN}${spin:$si:1}${RESET}  ${GRAY}已下载 %s   ${BOLD}%s${RESET}    " \
+          "$(_fmt_bytes "$have")" "$spd" 2>/dev/null || true
+      fi
+
+      if awk -v a="$last_progress_at" -v b="$t_now" -v s="$stall_timeout" 'BEGIN{exit !((b-a) >= s)}'; then
+        timed_out=1
+        kill "$curl_pid" 2>/dev/null || true
+        break
+      fi
+
+      sleep 0.1
+    done
+
+    local curl_status=0
+    if wait "$curl_pid"; then
+      curl_status=0
+    else
+      curl_status=$?
+    fi
+    DL_CURL_PID=""
+
+    # 下载结束：收尾取最终大小 + 总耗时平均速度。
+    have=$(stat -f%z "$output" 2>/dev/null || echo 0)
     if [[ $total -eq 0 ]] && [[ -s "$header_file" ]]; then
       total=$(awk 'tolower($0) ~ /^content-length:/{
         v=$0; sub(/^[^:]*:[[:space:]]*/,"",v); sub(/\r/,"",v); print v
@@ -179,38 +242,46 @@ _download_with_progress() {
       total=${total:-0}
     fi
 
-    local spd="$(_fmt_bytes "$speed")/s"
-    if [[ $total -gt 0 ]]; then
-      pct=$(awk -v h="$have" -v t="$total" 'BEGIN{
-        p = (t+0 > 0) ? (h / t * 100) : 0
-        if (p > 100) p = 100
-        printf "%d", p
-      }')
-      printf "\r    ${CYAN}${spin:$si:1}${RESET}  ${GRAY}%3d%%  %s / %s   ${BOLD}%s${RESET}    " \
-        "$pct" "$(_fmt_bytes "$have")" "$(_fmt_bytes "$total")" "$spd" 2>/dev/null || true
-    else
-      printf "\r    ${CYAN}${spin:$si:1}${RESET}  ${GRAY}已下载 %s   ${BOLD}%s${RESET}    " \
-        "$(_fmt_bytes "$have")" "$spd" 2>/dev/null || true
+    local t_end total_elapsed final_speed
+    t_end=$(_now)
+    total_elapsed=$(awk -v a="$t0" -v b="$t_end" 'BEGIN{d=b-a; if(d<0.001)d=0.001; printf "%.3f", d}')
+    final_speed=$(awk -v h="$have" -v e="$total_elapsed" 'BEGIN{printf "%.1f", h / e}')
+
+    rm -f "$header_file" 2>/dev/null || true
+    DL_HEADER_FILE=""
+
+    printf "\r\033[K"
+
+    if [[ "$timed_out" -eq 1 ]]; then
+      last_failure="连续 ${stall_timeout} 秒没有下载到新数据"
+      _warn "$last_failure"
+      continue
     fi
-    sleep 0.1
+
+    # 如果 Content-Length 已知且文件大小已达到预期，即使 curl 退出码异常，也交给
+    # 后续 sha 校验判断完整性，避免 100% 下载后无意义重下。
+    if [[ "$total" -gt 0 && "$have" -ge "$total" ]]; then
+      if [[ "$curl_status" -ne 0 ]]; then
+        _warn "curl 退出码为 ${curl_status}，但文件大小已达到预期；继续进入完整性校验。"
+      fi
+      _ok "下载完成（$(_fmt_bytes "$have")，平均 $(_fmt_bytes "$final_speed")/s）"
+      return 0
+    fi
+
+    # 少数响应没有 Content-Length：curl 成功且文件非空即可进入后续校验/挂载流程。
+    if [[ "$curl_status" -eq 0 && "$have" -gt 0 && "$total" -eq 0 ]]; then
+      _ok "下载完成（$(_fmt_bytes "$have")，平均 $(_fmt_bytes "$final_speed")/s）"
+      return 0
+    fi
+
+    last_failure="curl 退出码 ${curl_status}，已下载 $(_fmt_bytes "$have")"
+    if [[ "$total" -gt 0 ]]; then
+      last_failure="${last_failure} / $(_fmt_bytes "$total")"
+    fi
+    _warn "$last_failure"
   done
 
-  # 下载结束：收尾取最终大小 + 总耗时平均速度。
-  wait "$curl_pid" || { DL_CURL_PID=""; rm -f "$header_file"; DL_HEADER_FILE=""; _fail "下载失败，请检查网络" "network"; }
-  DL_CURL_PID=""
-  have=$(stat -f%z "$output" 2>/dev/null || echo 0)
-  local t_end total_elapsed final_speed
-  t_end=$(_now)
-  total_elapsed=$(awk -v a="$t0" -v b="$t_end" 'BEGIN{d=b-a; if(d<0.001)d=0.001; printf "%.3f", d}')
-  final_speed=$(awk -v h="$have" -v e="$total_elapsed" 'BEGIN{printf "%.1f", h / e}')
-  rm -f "$header_file"; DL_HEADER_FILE=""
-
-  printf "\r\033[K"
-  if [[ $total -gt 0 ]]; then
-    _ok "下载完成（$(_fmt_bytes "$have")，平均 $(_fmt_bytes "$final_speed")/s）"
-  else
-    _ok "下载完成（$(_fmt_bytes "$have")，平均 $(_fmt_bytes "$final_speed")/s）"
-  fi
+  _fail "下载失败（已重试 ${max_attempts} 次）：${last_failure}" "network"
 }
 
 # 把一个 github.com 下载链接按需套上代理前缀。
