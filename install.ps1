@@ -1,4 +1,4 @@
-# 用法（管理员 PowerShell）：
+﻿# 用法（管理员 PowerShell）：
 #   有 VPN（直连）:
 #     irm https://raw.githubusercontent.com/RunhuaHuang/Run-Releases/main/install.ps1 | iex
 #   无 VPN（走 gh-proxy.com 代理）:
