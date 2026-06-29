@@ -12,6 +12,41 @@
 
 ---
 
+## 📦 安装包下载
+
+> 以下链接随每次发版自动更新为最新版本（当前 v0.13.19）。
+
+不想用命令行一键安装？也可直接下载安装包，解压后双击对应文件即可，全程自动配置 Git 与 Node.js。
+
+### macOS（Apple Silicon）
+
+下载 **DMG 安装镜像**：
+
+👉 [`Run-0.13.19-arm64.dmg`](https://github.com/RunhuaHuang/Run-Releases/releases/download/v0.13.19/Run-0.13.19-arm64.dmg)
+
+下载后：
+
+1. 双击 `.dmg` 挂载镜像；
+2. 在弹出的安装窗口中双击 **`双击一键安装.command`**；
+3. 脚本会自动完成：拷贝 Run.app 到「应用程序」→ 配置 Git → 配置 Node.js → 启动 Run。
+
+### Windows x64
+
+下载 **一键安装压缩包**：
+
+👉 [`Run-Windows-OneClick-v0.13.19.zip`](https://github.com/RunhuaHuang/Run-Releases/releases/download/v0.13.19/Run-Windows-OneClick-v0.13.19.zip)
+
+下载后：
+
+1. 解压 ZIP（建议右键 →「全部解压缩」）；
+2. 进入解压后的文件夹，双击 **`双击一键安装.bat`**；
+3. 弹出 UAC 提权窗口时点击「是」，脚本会自动完成：安装 Run 主程序 → 配置 Git → 配置 Node.js → 启动 Run。
+
+> [!TIP]
+> 安装包内的脚本与下方「一键安装」命令做的事完全一样，区别只是：下载安装包 = 手动下载文件；一键安装 = 用一条命令自动下载 + 安装。
+
+---
+
 ## 一键安装
 
 请根据你的网络环境选择对应命令：
