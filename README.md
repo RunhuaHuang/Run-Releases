@@ -14,7 +14,7 @@
 
 ## 📦 安装包下载
 
-> 以下链接随每次发版自动更新为最新版本（当前 v0.14.21）。
+> 以下链接随每次发版自动更新为最新版本（当前 v0.14.22）。
 
 不想用命令行一键安装？也可直接下载安装包，解压后双击对应文件即可，全程自动配置 Git 与 Node.js。
 
@@ -22,7 +22,7 @@
 
 下载 **DMG 安装镜像**：
 
-👉 [`Run-0.14.21-arm64.dmg`](https://github.com/RunhuaHuang/Run-Releases/releases/download/v0.14.21/Run-0.14.21-arm64.dmg)
+👉 [`Run-0.14.22-arm64.dmg`](https://github.com/RunhuaHuang/Run-Releases/releases/download/v0.14.22/Run-0.14.22-arm64.dmg)
 
 下载后：
 
@@ -34,7 +34,7 @@
 
 下载 **一键安装压缩包**：
 
-👉 [`Run-Windows-OneClick-v0.14.21.zip`](https://github.com/RunhuaHuang/Run-Releases/releases/download/v0.14.21/Run-Windows-OneClick-v0.14.21.zip)
+👉 [`Run-Windows-OneClick-v0.14.22.zip`](https://github.com/RunhuaHuang/Run-Releases/releases/download/v0.14.22/Run-Windows-OneClick-v0.14.22.zip)
 
 下载后：
 
